@@ -8,10 +8,9 @@ import type { CaptureContextSummary } from '../../src/main/features/recall/captu
 
 export async function prepareNightlyCandidateInput(userId: string, input: SaveRecallCandidateInput): Promise<SaveRecallCandidateInput> {
   if (input.manual === true) throw new Error('manual input is not a nightly formation fixture');
-  // 2026-10-15 泄漏事故闸（⑮）：本助手会把合成会话物化进真实会话布局
-  //（chats/ 元数据+索引）。10-14 曾被 tsx 指到真实数据根跑过一次，5 组
-  // fixture 会话/捕获/候选/资产泄入真机数据（当日已手术清除）。工作根不在
-  // 系统临时目录时直接拒绝，防止再次指错根。
+  // This helper writes synthetic chats, captures, candidates and assets through
+  // production storage paths. Refuse a non-temporary workspace so fixtures
+  // cannot be materialized in a user's real data directory.
   const { realpath } = await import('node:fs/promises');
   const workspaceRoot = String(process.env.COGSEED_WORKSPACE_ROOT || '');
   const resolved = await realpath(workspaceRoot).catch(() => workspaceRoot);

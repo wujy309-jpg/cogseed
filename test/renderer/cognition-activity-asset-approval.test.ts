@@ -5,11 +5,24 @@ import postcss from 'postcss';
 import { loadCognitionAssets } from './helpers/cognition-renderer';
 
 const asset = { id: 'asset-a', title: '清单展示规则', scope: 'general', type: 'cognition', contentCategory: 'rule', status: 'active', version: '3', activeVersion: '3', statement: '原正文' };
-const proposal = { id: 'ap-a', assetId: asset.id, baselineVersion: '3', state: 'pending', fields: ['statement', 'applicableWhen', 'forbiddenWhen'], payload: { statement: '读取失败时显示待核对，不能用零代替未知。', applicableWhen: ['完整清单查询'], forbiddenWhen: ['清单读取失败'] }, beforeValues: { statement: '原正文', applicableWhen: ['查询清单'] }, reason: '用户本轮反馈了审批卡片内容与结构问题，AI 据此提出改进。', createdAt: '2026-10-13T14:00:00Z' };
+const proposal = { id: 'ap-a', assetId: asset.id, baselineVersion: '3', state: 'pending', fields: ['statement', 'applicableWhen', 'forbiddenWhen'], payload: { statement: '读取失败时显示待核对，不能用零代替未知。', applicableWhen: ['完整清单查询'], forbiddenWhen: ['清单读取失败'] }, beforeValues: { statement: '原正文', applicableWhen: ['查询清单'] }, reason: '合成用户要求完整清单区分未知状态，助手据此提出正文改进。', createdAt: '2026-10-13T14:00:00Z' };
 const button = (decision: string) => ({ dataset: { act: 'activity-approval', id: proposal.id, decision }, disabled: false, getAttribute: () => null, setAttribute: vi.fn(), removeAttribute: vi.fn() });
 const load = (extra: Record<string, unknown> = {}, route = {}) => loadCognitionAssets({ assets: [asset], assetApprovals: [proposal], ...extra }, { name: 'activity', ...route });
 
 describe('系统活动接入真实资产修改审批', () => {
+  it('明确提议深链未找到或正在读取时，绝不回退成第一条可操作提议', async () => {
+    const missing = load({}, { approvalId: 'ap-missing' });
+    const html = missing.render();
+    expect(html).toContain('这条提议暂不可用');
+    expect(html).not.toContain('data-act="activity-approval"');
+    const loading = load({ loading: true }, { approvalId: 'ap-missing' });
+    expect(loading.render()).toContain('正在读取活动');
+    expect(loading.render()).not.toContain('data-act="activity-approval"');
+    const cached = load({ loading: true }, { approvalId: proposal.id });
+    cached.ns.api.call = vi.fn();
+    await cached.ns.activityController.handleClick(button('confirm'));
+    expect(cached.ns.api.call).not.toHaveBeenCalled();
+  });
   it('生产详情样式能被 CSS 解析器完整读取，抽屉和使用边界规则不被损坏选择器吞掉', () => {
     const from = path.resolve(__dirname, '../../src/renderer/modules/cognition-assets/prototype.css');
     const sheet = postcss.parse(fs.readFileSync(from, 'utf8'), { from });

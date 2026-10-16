@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 const buttonSource = readFileSync(resolve(__dirname, '../../src/renderer/modules/ui-button.js'), 'utf8');
 const formSource = readFileSync(resolve(__dirname, '../../src/renderer/modules/ui-form.js'), 'utf8');
+const cardSource = readFileSync(resolve(__dirname, '../../src/renderer/modules/ui-card.js'), 'utf8');
+const statusSource = readFileSync(resolve(__dirname, '../../src/renderer/modules/ui-status.js'), 'utf8');
+const iconSource = readFileSync(resolve(__dirname, '../../src/renderer/modules/icons.js'), 'utf8');
 const source = readFileSync(resolve(__dirname, '../../src/renderer/modules/cognition-assets/settings.js'), 'utf8');
 function setup(settings = { autoApproval: false }) {
   const confirmUser = vi.fn().mockResolvedValue(true);
@@ -51,7 +54,10 @@ function settingsHtml(patch: Record<string, unknown> = {}) {
     uiStatusPill: (options: any) => `<span role="status">${options.label}</span>`,
     uiProgressBar: (options: any) => `<div role="progressbar" aria-label="${options.ariaLabel}" aria-valuenow="${options.value}" aria-valuemax="${options.max}"></div>`,
   };
+  runInNewContext(iconSource, { window });
   runInNewContext(buttonSource, { window });
+  runInNewContext(cardSource, { window });
+  runInNewContext(statusSource, { window });
   runInNewContext(formSource, { window });
   runInNewContext(source, { window });
   runInNewContext(viewsSource.replace('NS.render = render;', 'NS.__settingsView = viewOrganizeSettingsPage; NS.render = render;'), { window });
@@ -174,108 +180,188 @@ function modelSettingsHarness() {
   const { NS } = setup({ enabled: true, modelCandidates: [] } as any);
   NS.store.route = { name: 'settings' };
   NS.esc = (value: unknown) => String(value ?? '');
-  const invoke = vi.fn(async (channel: string, args: any) => channel === 'auth.listEntries'
-    ? { ok: true, entries: [{ provider: 'cp:one', providerLabel: 'One' }, { provider: 'expired', providerLabel: 'Expired', oauthExpired: true, modelAvailable: false }] }
-    : { ok: true, models: args.provider === 'cp:one' ? [{ id: 'first', name: 'First', reasoning: true }, { id: 'second', name: 'Second' }] : [{ id: 'gone', name: 'Gone' }] });
+  let models = [
+    { provider: 'cp:one', model: 'first', label: 'One · First', available: true, configured: true },
+    { provider: 'cp:one', model: 'second', label: 'One · Second', available: true, configured: true },
+    { provider: 'expired', model: 'gone', label: 'Expired · Gone', available: false, configured: true },
+  ];
+  const invoke = vi.fn(async () => ({ ok: true, modelSelection: { configured: models } }));
+  let modal: any;
+  const focus = vi.fn();
+  const root = { querySelector: () => ({ focus }) };
+  const events: Record<string, () => void> = {};
   const window = {
     CogAssets: NS, cogseed: { invoke },
-    uiButton: (value: any) => `<button data-act="${value.attrs['data-act']}"${value.disabled ? ' disabled' : ''}>${value.label}</button>`,
-    uiSelect: (value: any) => `<select id="${value.id}">${value.options.map((item: any) => `<option>${item.label}</option>`).join('')}</select>`,
-    uiAccordion: (value: any) => value.items.map((item: any) => `<details${item.open ? ' open' : ''}>${item.title}${item.meta || ''}${item.bodyHtml}</details>`).join(''),
+    addEventListener: (name: string, handler: () => void) => { events[name] = handler; },
+    uiModal: vi.fn((options: any) => {
+      let resolveModal: (value: unknown) => void;
+      const body = { innerHTML: options.bodyHtml };
+      const heading = { textContent: '' };
+      const close = { setAttribute: vi.fn() };
+      let onClick: (event: any) => Promise<void>;
+      const dialog = {
+        querySelector: (selector: string) => selector === '.ui-modal__body' ? body : selector === '.ui-modal__title' ? heading : selector === '[data-ui-modal-close]' ? close : null,
+        querySelectorAll: () => [],
+        addEventListener: (_name: string, handler: any) => { onClick = handler; }, removeEventListener: vi.fn(), focus: vi.fn(),
+      };
+      modal = Object.assign(new Promise(resolve => { resolveModal = resolve; }), {
+        dialog, body, options, close: vi.fn(() => resolveModal(null)),
+        choose: (provider: string, model: string, disabled = false) => onClick({ target: { closest: () => ({ dataset: { modelKey: JSON.stringify([provider, model]) }, disabled }) } }),
+      });
+      return modal;
+    }),
   };
+  runInNewContext(iconSource, { window });
   runInNewContext(buttonSource, { window });
-  runInNewContext(formSource, { window });
+  runInNewContext(cardSource, { window });
+  runInNewContext(statusSource, { window });
   runInNewContext(source, { window });
   NS.actions.updateCaptureSettings.mockImplementation(async (patch: any) => { Object.assign(NS.store.captureSettings, patch); });
-  return { NS, policy: NS.assetSettings, invoke, pick: (provider: string, model: string) => ({ querySelector: () => ({ value: JSON.stringify([provider, model]) }) }), el: (index = 0) => ({ dataset: { index: String(index) } }) };
+  return { NS, policy: NS.assetSettings, invoke, root, focus, events,
+    models: () => models, setModels: (next: typeof models) => { models = next; },
+    modal: () => modal,
+    open: () => NS.assetSettings.modelAction('nightly-model-add', { dataset: {} }, root),
+    act: (action: string, index = 0) => NS.assetSettings.modelAction(action, { dataset: { index: String(index) } }, root),
+  };
 }
 
-describe('夜间模型页面顺序与系统目录', () => {
-  it('空配置默认跟随系统，复用系统目录且重复添加不产生重复备用项', async () => {
-    const { NS, policy, invoke, pick, el } = modelSettingsHarness();
-    expect(policy.modelControls()).toContain('跟随系统模型');
-    await policy.loadModels();
-    expect(invoke).toHaveBeenCalledWith('auth.listEntries', { includeUnavailable: true });
-    expect(policy.modelControls()).toContain('One · First');
-    expect(policy.modelControls()).not.toContain('Expired · Gone');
-    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'first'));
-    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'first'));
-    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'second'));
-    expect(NS.store.captureSettings.modelCandidates).toEqual([{ provider: 'cp:one', model: 'first' }, { provider: 'cp:one', model: 'second' }]);
-    await policy.modelAction('nightly-model-up', el(1), pick('', ''));
-    expect(NS.store.captureSettings.modelCandidates[0].model).toBe('second');
-    await policy.modelAction('nightly-model-remove', el(1), pick('', ''));
-    expect(NS.store.captureSettings.modelCandidates).toHaveLength(1);
-    await policy.modelAction('nightly-model-reset', el(), pick('', ''));
-    expect(NS.store.captureSettings.modelCandidates).toEqual([]);
+describe('夜间模型条目与选择弹窗', () => {
+  it('默认只显示首个模型及末尾添加行；弹窗只使用后端配置列表', async () => {
+    const h = modelSettingsHarness();
+    await h.policy.loadModels();
+    const html = h.policy.modelControls();
+    expect(h.invoke).toHaveBeenCalledExactlyOnceWith('recall.captures.settings.get', {});
+    expect(html).toContain('跟随系统首个模型');
+    expect(html).toContain('One · First');
+    expect(html).not.toContain('One · Second');
+    expect(html).not.toContain('Expired · Gone');
+    expect(html.indexOf('添加模型')).toBeGreaterThan(html.indexOf('One · First'));
+    expect(html).not.toContain('<select');
+    expect(html).not.toContain('设为首选模型');
+    for (const act of ['nightly-model-up', 'nightly-model-down', 'nightly-model-remove', 'nightly-model-reset']) expect(html).not.toContain(`data-act="${act}"`);
+    const opened = h.open();
+    expect(h.modal().body.innerHTML).toContain('已添加');
+    expect(h.modal().body.innerHTML).toContain('One · Second');
+    expect(h.modal().body.innerHTML).toContain('系统配置中已停用或移除');
+    await h.modal().choose('cp:one', 'first');
+    await h.modal().choose('expired', 'gone');
+    expect(h.NS.actions.updateCaptureSettings).not.toHaveBeenCalled();
+    await h.modal().choose('cp:one', 'second');
+    await opened;
+    expect(h.NS.store.captureSettings.modelCandidates).toEqual([{ provider: 'cp:one', model: 'first' }, { provider: 'cp:one', model: 'second' }]);
+    expect(h.focus).toHaveBeenCalled();
+    expect(h.policy.modelControls()).toContain('备用 1');
   });
-  it('已删除模型保留可辨认状态，保存失败与目录失败均不丢顺序且可以重试', async () => {
-    const { NS, policy, invoke, pick, el } = modelSettingsHarness();
-    NS.store.captureSettings.modelCandidates = [{ provider: 'cp:removed', model: 'saved' }];
-    await policy.loadModels();
-    expect(policy.modelControls()).toContain('系统配置中已停用或移除');
-    NS.actions.updateCaptureSettings.mockRejectedValueOnce(new Error('save failed'));
-    await expect(policy.modelAction('nightly-model-reset', el(), pick('', ''))).rejects.toThrow('save failed');
-    expect(NS.store.captureSettings.modelCandidates).toEqual([{ provider: 'cp:removed', model: 'saved' }]);
-    invoke.mockRejectedValueOnce(new Error('directory offline'));
-    await policy.loadModels(true);
-    expect(policy.modelControls()).toContain('模型列表读取失败');
-    expect(NS.store.captureSettings.modelCandidates[0].model).toBe('saved');
-    await policy.modelAction('nightly-model-retry', el(), pick('', ''));
-    expect(policy.modelControls()).not.toContain('模型列表读取失败');
-    expect(policy.modelControls()).toContain('系统配置中已停用或移除');
+  it('模型和添加入口使用相同卡片壳，弹窗以独立模型名、供应商和右侧状态呈现', async () => {
+    const h = modelSettingsHarness(); await h.policy.loadModels();
+    const html = h.policy.modelControls();
+    expect(html.match(/class="ui-resource-card[^"\n]*ca-nightly-model-card"/g)).toHaveLength(2);
+    expect(html).toContain('class="ca-nightly-model-name">First</strong>');
+    expect(html).toContain('class="ca-nightly-model-provider">One</span>');
+    expect(html).toContain('从设置中选择已配置的模型');
+    const opened = h.open();
+    expect(h.modal().options.size).toBe('md');
+    const body = h.modal().body.innerHTML;
+    expect(body).toContain('ui-status-pill--success');
+    expect(body).toContain('已添加');
+    expect(body).toContain('class="ca-nightly-model-name">First</strong>');
+    const buttons = body.match(/<button[^>]*>/g) || [];
+    expect(buttons).toHaveLength(1); // Added and unavailable entries remain readable, without a disabled button wash.
+    expect(buttons[0]).toContain('data-model-key=');
+    expect(buttons[0]).toContain('second');
+    h.modal().close(); await opened;
   });
-});
-
-
-describe('夜间模型设置与实际配置一致', () => {
-  it('显示系统首选，但不把配置首选说成已成功调用的模型', async () => {
-    const { NS, policy } = modelSettingsHarness();
-    NS.store.captureModel = { provider: 'cp:one', model: 'first', available: false };
-    await policy.loadModels();
-    const html = policy.modelControls();
-    expect(html).toContain('系统首选：One · First');
-    expect(html).toContain('跟随系统模型顺序');
-    expect(html).not.toContain('调用成功');
-    expect(html).toMatch(/<button[^>]*disabled[^>]*data-act="nightly-model-add"/);
-  });
-  it('保留手输绑定模型，登录过期但可以刷新的配置仍可选择', async () => {
-    const { policy, invoke } = modelSettingsHarness();
-    invoke.mockImplementation(async (channel: string) => channel === 'auth.listEntries'
-      ? { ok: true, entries: [{ provider: 'manual', providerLabel: 'Manual', model: 'custom-id', modelName: 'Custom', oauthExpired: true }] }
-      : { ok: true, models: [] });
-    await policy.loadModels();
-    expect(policy.modelControls()).toContain('Manual · Custom');
-    expect(policy.modelControls()).not.toContain('系统配置中已停用或移除');
-  });
-  it('部分目录失败时保留已绑定模型和重试入口', async () => {
-    const { NS, policy, invoke } = modelSettingsHarness();
-    NS.store.captureSettings.modelCandidates = [{ provider: 'manual', model: 'custom-id' }];
-    invoke.mockImplementation(async (channel: string) => {
-      if (channel === 'auth.listEntries') return { ok: true, entries: [{ provider: 'manual', model: 'custom-id' }] };
-      throw new Error('offline');
+  it('保存失败保留弹窗及原列表，重试成功；并发点击只保存一次', async () => {
+    const h = modelSettingsHarness(); await h.policy.loadModels();
+    h.NS.actions.updateCaptureSettings.mockRejectedValueOnce(new Error('disk unavailable'));
+    const opened = h.open();
+    await h.modal().choose('cp:one', 'second');
+    expect(h.modal().body.innerHTML).toContain('未能保存模型列表');
+    expect(h.modal().close).not.toHaveBeenCalled();
+    expect(h.NS.store.captureSettings.modelCandidates).toEqual([]);
+    let finish: () => void;
+    h.NS.actions.updateCaptureSettings.mockImplementationOnce(async (patch: any) => {
+      await new Promise<void>(resolve => { finish = resolve; });
+      Object.assign(h.NS.store.captureSettings, patch);
     });
-    await policy.loadModels();
-    const html = policy.modelControls();
-    expect(html).toContain('manual · custom-id');
-    expect(html).toContain('部分模型目录未读到');
-    expect(html).toContain('nightly-model-retry');
-    expect(html).not.toContain('系统配置中已停用或移除');
+    const save = h.modal().choose('cp:one', 'second');
+    await h.modal().choose('cp:one', 'second');
+    expect(h.NS.actions.updateCaptureSettings).toHaveBeenCalledTimes(2);
+    expect(h.modal().body.innerHTML).toContain('aria-busy="true"');
+    finish!(); await save; await opened;
+    expect(h.NS.store.captureSettings.modelCandidates).toHaveLength(2);
   });
-  it('选择前不能保存，重画保留选择；保存后明确首选与备用顺序', async () => {
-    const { NS, policy, pick, el } = modelSettingsHarness();
-    await policy.loadModels();
-    const add = { disabled: true, classList: { toggle: vi.fn() } };
-    policy.modelInput({ target: { id: 'ca-nightly-model-picker', value: JSON.stringify(['cp:one', 'first']) } }, { querySelector: () => add });
-    expect(add.disabled).toBe(false);
-    expect(add.classList.toggle).toHaveBeenCalledWith('is-disabled', false);
-    expect(policy.modelControls()).toContain('selected');
-    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'first'));
-    await policy.modelAction('nightly-model-add', el(), pick('cp:one', 'second'));
-    const html = policy.modelControls();
-    expect(html).toContain('首选模型');
-    expect(html).toContain('备用 1');
-    expect(html).toMatch(/<button[^>]*disabled[^>]*data-act="nightly-model-add"/);
-    expect(NS.actions.updateCaptureSettings).toHaveBeenLastCalledWith({ modelCandidates: [{ provider: 'cp:one', model: 'first' }, { provider: 'cp:one', model: 'second' }] });
+  it('默认随系统首个变化，自定义顺序不被刷新覆盖，并可排序、删除及恢复', async () => {
+    const h = modelSettingsHarness(); await h.policy.loadModels();
+    h.setModels([...h.models()].reverse()); await h.policy.loadModels(true);
+    expect(h.policy.modelControls()).toContain('Expired · Gone');
+    expect(h.policy.modelControls()).toContain('系统配置中已停用或移除');
+    h.NS.store.captureSettings.modelCandidates = [{ provider: 'cp:one', model: 'first' }, { provider: 'cp:one', model: 'second' }];
+    await h.policy.loadModels(true);
+    expect(h.policy.modelControls()).not.toContain('Expired · Gone');
+    await h.act('nightly-model-up', 1);
+    expect(h.NS.store.captureSettings.modelCandidates[0].model).toBe('second');
+    await h.act('nightly-model-down', 0);
+    expect(h.NS.store.captureSettings.modelCandidates[0].model).toBe('first');
+    await h.act('nightly-model-remove', 0); await h.act('nightly-model-remove', 0);
+    expect(h.NS.store.captureSettings.modelCandidates).toEqual([]);
+    expect(h.policy.modelControls()).toContain('Expired · Gone');
+  });
+  it('旧目录项保留可辨认状态；读取和保存失败都不丢已保存顺序', async () => {
+    const h = modelSettingsHarness();
+    h.NS.store.captureSettings.modelCandidates = [{ provider: 'removed', model: 'saved' }];
+    await h.policy.loadModels();
+    expect(h.policy.modelControls()).toContain('已不在设置列表，保留原配置');
+    h.NS.actions.updateCaptureSettings.mockRejectedValueOnce(new Error('save failed'));
+    await expect(h.act('nightly-model-reset')).rejects.toThrow('save failed');
+    h.invoke.mockRejectedValueOnce(new Error('offline')); await h.policy.loadModels(true);
+    expect(h.policy.modelControls()).toContain('模型列表读取失败');
+    expect(h.NS.store.captureSettings.modelCandidates[0].model).toBe('saved');
+    await h.act('nightly-model-retry');
+    expect(h.policy.modelControls()).not.toContain('模型列表读取失败');
+    await h.act('nightly-model-reset');
+    expect(h.NS.store.captureSettings.modelCandidates).toEqual([]);
+  });
+  it('弹窗打开期间支持语言及模型目录变化，取消不保存', async () => {
+    const h = modelSettingsHarness(); await h.policy.loadModels();
+    const opened = h.open();
+    h.NS.T = (key: string) => key;
+    h.events['i18n-change']();
+    expect(h.modal().body.innerHTML).toContain('cognition.settings_nightly_model_added');
+    h.setModels(h.models().slice(0, 1)); await h.policy.loadModels(true);
+    expect(h.modal().body.innerHTML).not.toContain('One · Second');
+    h.modal().close(); await opened;
+    expect(h.NS.actions.updateCaptureSettings).not.toHaveBeenCalled();
+  });
+  it('离页修改系统模型后不复用旧快照，较早的目录响应不能覆盖较新的顺序', async () => {
+    const h = modelSettingsHarness();
+    h.NS.store.captureModelSelection = { configured: h.models().slice(0, 1) };
+    h.NS.store.route.name = 'overview';
+    h.setModels([h.models()[1]]);
+    h.events['cogseed:model-entries-changed']();
+    h.NS.store.route.name = 'settings';
+    await h.policy.loadModels();
+    expect(h.policy.modelControls()).toContain('One · Second');
+    expect(h.policy.modelControls()).not.toContain('One · First');
+    let finishOld: (value: unknown) => void;
+    h.invoke.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }) as any);
+    const old = h.policy.loadModels(true);
+    await h.policy.loadModels(true);
+    finishOld!({ ok: true, modelSelection: { configured: [{ provider: 'stale', model: 'old', label: 'Stale', available: true }] } });
+    await old;
+    expect(h.policy.modelControls()).toContain('One · Second');
+    expect(h.policy.modelControls()).not.toContain('Stale');
+  });
+  it('无配置时保留真实运行来源，模型列表未确认保存不得冒充成功', async () => {
+    const h = modelSettingsHarness(); h.setModels([]); await h.policy.loadModels();
+    h.NS.store.captureModel = { channel: 'cli' };
+    expect(h.policy.modelControls()).toContain('将使用可用的本地助手');
+    h.NS.store.captureModel = { channel: 'api', apiConfigured: true };
+    expect(h.policy.modelControls()).toContain('将使用环境变量配置的模型');
+    const { loadCognitionAssets } = await import('./helpers/cognition-renderer');
+    const invoke = vi.fn().mockResolvedValue({ ok: true, settings: { modelCandidates: [] } });
+    const loaded = loadCognitionAssets({ captureSettings: { modelCandidates: [] } }, {}, { cogseed: { invoke } });
+    await expect(loaded.ns.actions.updateCaptureSettings({ modelCandidates: [{ provider: 'one', model: 'first' }] })).rejects.toThrow('保存模型列表');
+    expect(loaded.store.captureSettings.modelCandidates).toEqual([]);
   });
 });

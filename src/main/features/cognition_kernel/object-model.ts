@@ -1,10 +1,10 @@
 /**
- * cognition_kernel/object-model — 统一认知库的对象模型（S3）。
+ * cognition_kernel/object-model — 统一认知库的对象模型。
  *
  * 四类内容里的三类在本库物理存储：
  *   assertion（关于我的断言）｜rule（规则）｜bundle（能力包：模板+方法）
  * experience 物理留 KSTAR 线、task_local 留项目作用域——两者只经 resolve()
- * 联合读，不进本库（B 路线总览 v0.2 §2.1 边界声明）。
+ * 联合读，不进本库。
  *
  * 生命周期语义吸收自 recall 资产线（版本链/软删/并入去向），断言语义吸收自
  * po v2 的 PoValue（asOf/verified/restricted/groupId+fieldName 槽位）。
@@ -30,7 +30,7 @@ export interface HomeRegistryEntry {
   builtin?: true;
 }
 
-/** 内置六家：出厂默认（判据文案与 2026-10-02 拍板的归属表一致）。 */
+/** 内置归属：出厂默认的判据、落池位置与存储形态。 */
 export const DEFAULT_HOME_REGISTRY: readonly HomeRegistryEntry[] = [
   {
     home: 'cognition', label: '认知',

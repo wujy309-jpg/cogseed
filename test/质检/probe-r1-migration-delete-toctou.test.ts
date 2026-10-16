@@ -1,34 +1,7 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 探针（本轮红队-越权与状态）：runExperienceMigration 判据→物理迁出窗口不复核资产状态。
- *
- * 读码链路（experience-migration.ts）：
- *  - 逐条执行序 = readAbilityAsset :452（**无锁直读**，store.ts
- *    readExistingRecallRecord 不走 fileEditLock）→ migrationVerdict :460（终态/
- *    provenance 判据，基于锁外快照）→ ① freezeAssetIntoConfirmedProjections :467
- *    → ② writeExperienceForAsset :475（写 `exp-mig-<assetId>` 经验，持**经验记录锁**）
- *    → ③ removeAssetRecordAndVersions :482 持资产记录锁 fs.rm 主记录 + 删版本流；
- *  - removeAssetRecordAndVersions（:339-346）锁内**只做 rm，零状态复核**——
- *    migrationVerdict 自己的注释（:62「deleted/purged/revoked：删除是用户意图，
- *    不迁」）与 deleteAbilityAsset 的 30 天保留期承诺（restore 可回 active）都
- *    只在锁外快照上检查过一次；
- *  - 对照：同域 setExperienceStatus / setExperienceType / archiveExperience 的
- *    updater 全部锁内复核 assertMutableExperience（本轮同题发现 1 的先例）、
- *    asset-service 迁移函数锁内 asAsset + assertMutableAbilityAsset（本遍 F-r2
- *    修复先例）——唯独经验迁移的迁出段漏。
- *
- * 危害：窗口期内（①②两段真实 IO 之间）用户 deleteAbilityAsset 落盘 → 迁移照常
- * 物理删除已删资产的主记录与版本流：保留期/restore 承诺被静默打破（restore 从此
- * not found），且不走 purge 级联（回流候选/使用回执等引用面照旧残留）。
- *
- * 手法：writeExperienceForAsset 的经验 id 是确定性的 `exp-mig-<assetId>`——预持
- * 该路径的 fileEditLock 把迁移精确卡在 ②与③之间（与 exp-merge 探针同款确定性
- * 时序，不依赖真实赛跑运气），持锁期间走**真实** deleteAbilityAsset。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **P-r1-89（迁出锁内终态复核主修唯一，分叉在已写成的 exp-mig 经验条目去留待拍板）**——
- * 断言漏洞现状的用例 it.skip 注明编号，拍板修复后反转/改写断言启用；
- * 对照组（无竞态/无坏档时守卫与正常路径有效）不依赖漏洞，保留 active。
- */
+/** 经验迁移在写出经验与物理迁出资产之间可能遇到用户删除。
+ * 用经验记录锁固定交错：迁出段须在资产锁内重查终态；已删除的主记录和
+ * 版本保留，经验若已写出则如实记录迁移未完成，不能声称迁移成功。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -97,7 +70,7 @@ function userAction(reason: string) {
   return { actor: 'user' as const, reason };
 }
 
-describe('探针 r1 › 经验迁移判据→迁出窗口不复核资产状态（TOCTOU）', () => {
+describe('经验迁移的锁内终态复核', () => {
   it('对照组：无并发时 deleted 资产按判据跳过（terminal_status），保留期与 restore 都在', async () => {
     const { assets, migration, recallJsonRecordPath } = await setup();
     await seedAsset('active');
@@ -116,7 +89,7 @@ describe('探针 r1 › 经验迁移判据→迁出窗口不复核资产状态�
     expect(restored.status).toBe('active');
   });
 
-  it('【已修 P-r1-89】判据通过后、物理迁出前资产被删除 → 锁内复核拒绝迁出，已写经验记 failed、保留期/restore 完好', async () => {
+  it('判据通过后、物理迁出前资产被删除 → 锁内复核拒绝迁出，已写经验记 failed、保留期/restore 完好', async () => {
     const { assets, migration, recallJsonRecordPath, fileEditLock } = await setup();
     await seedAsset('active');
     const assetPath = recallJsonRecordPath(UID, 'ability-assets', ASSET);
@@ -142,7 +115,7 @@ describe('探针 r1 › 经验迁移判据→迁出窗口不复核资产状态�
     await holder;
     const run = await runP;
 
-    // 修复后（P-r1-89 拍板口径）：迁出段锁内复核终态——已删资产不物理迁出。
+    // 迁出段锁内复核终态：已删资产不物理迁出。
     // 本场景经验条目已写出（②在删除前完成）→ 记 failed（asset_removal_failed），
     // 不是 migrated、也不是 skipped。
     expect(run.migrated).toBe(0);

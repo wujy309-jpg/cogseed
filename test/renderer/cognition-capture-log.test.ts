@@ -11,7 +11,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const rootDir = resolve(__dirname, '../..');
-// 2026-09-29 views.js 机械拆分：sourceIssuesSection 等异常下钻组件随候选族迁入
+// sourceIssuesSection 等异常下钻组件随候选族迁入
 // review-candidate.js / review-views.js；我的认知列表由 library.js 提供。
 const viewsSource = ['views.js', 'review-candidate.js', 'review-views.js', 'library.js']
   .map((file) => readFileSync(resolve(rootDir, `src/renderer/modules/cognition-assets/${file}`), 'utf8'))
@@ -54,7 +54,7 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
           && (item.status === 'failed'
             || (item.status === 'paused' && String(item.statusReason || '') !== 'source_paused'))).length;
       const failedTasks = Number(((store.captureCounts as { failed?: number } | undefined) || {}).failed || 0);
-      // G1（承接表 01）：与 core.js 的 stats 同口径——任务执行失败单独计数。
+      // 与 core.js 的 stats 同口径——任务执行失败单独计数。
       const captureConvIds = new Set(((store.captures as Array<{ conversationId?: string }> | undefined) || [])
         .map((capture) => String(capture.conversationId || '')).filter(Boolean));
       const taskFailed = ((store.sources as Array<{ items?: Array<{ id?: string; lastTurnFailed?: boolean }> }> | undefined) || [])
@@ -99,7 +99,7 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/ui-status.js');
   // ui-segmented-control.js 同为 index.html 静态共享层（资产编辑表单的敏感级
-  // 三档控件用它，specs/010 T026）——夹具的 window 必须和真机一样有这一层。
+  // 三档控件用它）——夹具的 window 必须和真机一样有这一层。
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   require('../../src/renderer/modules/ui-segmented-control.js');
   // ui-page-header.js 同样是 index.html 里的静态共享层（整理报告页头用它）。
@@ -125,7 +125,7 @@ function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerH
 function renderPage(routeName: string, storePatch: Record<string, unknown>, routePatch: Record<string, unknown> = {}): string {
   const { cogAssets: NS, domRoot: rootEl } = ensureModule();
   const store = NS.store as Record<string, unknown>;
-  // 「真实使用」白名单由主进程随 recall.timeline.list 下发（2026-09-25 US-602）：
+  // 「真实使用」白名单由主进程随 recall.timeline.list 下发：
   // 这里给与真实载荷一致的默认值；用例要考「缺失时 fail-closed」就显式传 []。
   Object.assign(store, { realUsageKinds: ['usage_recorded', 'projection_confirmed'] }, storePatch);
   const library = NS.library as { state: Record<string, unknown> };
@@ -205,7 +205,7 @@ const detailCapture = {
 
 describe('信息架构：六个顶级入口与深链归一', () => {
   it('旧六视图已删净，新视图（系统活动双视角）+ 设置页 + 异常下钻组件存在', () => {
-    // specs/018 + 2026-10-08 U04：独立待我处理页下线，五页签；
+    // 独立待我处理页下线，五页签；
     // 治理动作收敛进系统活动（viewActivity：需要关注/已处理）。
     expect(coreSource).toContain("{ id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树', disabled: true }");
     expect(coreSource).toContain("{ id: 'activity', titleKey: 'cognition.tab_activity'");
@@ -230,7 +230,7 @@ describe('信息架构：六个顶级入口与深链归一', () => {
     expect(appSource).not.toContain("case 'open-evidence'");
     expect(appSource).not.toContain("case 'toggle-organize-settings'");
     expect(appSource).not.toContain("case 'toggle-source-issues'");
-    // data-act 名保留（go-organize-settings），落点改新路由名 settings（specs/018）。
+    // data-act 名保留（go-organize-settings），落点改新路由名 settings。
     expect(appSource).toContain("case 'go-organize-settings'");
     expect(appSource).toContain("router.go({ name: 'settings' })");
     expect(viewsSource).toContain('data-cognition-page-link="captures"');
@@ -254,15 +254,15 @@ describe('系统活动与认知设置', () => {
     captureSettings: { enabled: true, executionPolicy: 'smart', reviewPolicy: 'auto' },
   };
 
-  it('页首整理设置按钮已删（2026-09-27 子安）：页签「整理设置」是唯一入口', () => {
+  it('页首不重复显示整理设置按钮：页签「整理设置」是唯一入口', () => {
     const html = renderPage('organize', baseStore);
-    // 2026-09-27 保留现有六入口：设置继续在页签中，页头右侧不重复摆入口。
+    // 设置继续在页签中，页头右侧不重复摆入口。
     expect(html).not.toContain('data-act="go-organize-settings"');
     expect(html).not.toContain('is-settings');
     expect(html).not.toContain('<svg width="18"');
     expect(html).not.toContain('ca-drawer');
     expect(html).not.toContain('toggle-organize-settings');
-    // 大扫除按钮已收进整理设置页（specs/017 整改三）：页首不再有第二颗按钮。
+    // 大扫除按钮已收进整理设置页：页首不再有第二颗按钮。
     expect(html).not.toContain('data-act="open-cleanup"');
   });
 
@@ -327,7 +327,7 @@ describe('系统活动与认知设置', () => {
     expect(html).not.toContain('data-act="run-maintenance"');
   });
 
-  it('寒暄与无回复会话不进系统活动两列表（C-05：已跳过不灌入）', () => {
+  it('寒暄与无回复会话不进系统活动两列表', () => {
     const store = {
       sources: [{ kind: 'conversation', items: [
         { id: 'conv-failed', kind: 'conversation', title: '没等到回复的会话', updatedAt: '2026-09-15T04:00:00.000Z', lastTurnFailed: true },
@@ -384,7 +384,7 @@ describe('系统活动与认知设置', () => {
     expect(deepLink).not.toContain('data-act="overview-manage-toggle"');
   });
 
-  it('静默筛掉的会话不进两列表（C-05：已跳过不灌入已处理）', () => {
+  it('静默筛掉的会话不进两列表', () => {
     const html = renderPage('organize', baseStore);
     const done = renderPage('organize', baseStore, { activityDone: '1' });
     for (const page of [html, done]) {
@@ -416,7 +416,7 @@ describe('整理详情页', () => {
     expect(html).toContain('正在提炼候选');
     expect(html).toContain('模型提炼中');
     expect(html).toContain('1 分 5 秒');
-    // 模型用量白话（2026-09-28 两页重整）：单位进标签，值只出数字。
+    // 模型用量白话：单位进标签，值只出数字。
     expect(html).toContain('模型用量（token）');
     expect(html).toContain('1234');
     expect(html).not.toContain('data-act="capture-action"');
@@ -424,7 +424,7 @@ describe('整理详情页', () => {
     expect(html).toContain('data-act="go-back"');
   });
 
-  it('页头与建议详情同款（2026-09-29 版式统一）：固定标题+说明，会话标题降为卡内 h2，统计卡撤', () => {
+  it('页头与建议详情同款：固定标题+说明，会话标题降为卡内 h2，统计卡撤', () => {
     const html = renderPage('organize', { captures: [detailCapture], sources: [] }, { captureId: 'rcap-x' });
     // 页头 = 返回行 + 固定标题「整理任务详情」+ 一行说明（与建议详情同构，
     // 不再把会话标题/原因/统计卡塞进页头）。
@@ -436,14 +436,14 @@ describe('整理详情页', () => {
     expect(html).toContain('尝试次数');
     // 统计卡带不再出现在任务详情页（「待确认/已保存资产」计数看下方分区）。
     expect(html).not.toContain('class="stats"');
-    // 单卡文档式（2026-09-29 第二步，同建议详情）：整理结果/对话上下文是
+    // 单卡文档式（与建议详情一致）：整理结果/对话上下文是
     // 主体卡内的分节（分隔线区隔），不再是散在外面的独立卡片。
     expect(html).toContain('ca-capture-sections');
     expect(html).not.toContain('ca-detail-duo');
     expect(html).not.toContain('ca-result-card');
     expect(html).toContain('整理结果');
     expect(html).toContain('对话上下文');
-    // 卡底一行（2026-09-29 子安拍板）：进度条从标题下方挪到卡底、靠左，
+    // 卡底一行：进度条从标题下方挪到卡底、靠左，
     // 按钮靠右——顺序=分节之后先进度条、后按钮。
     const stepsAt = html.indexOf('ca-steps-bar');
     const footBtnAt = html.indexOf('data-act="open-conversation"');
@@ -479,7 +479,7 @@ describe('整理详情页', () => {
     // 沉淀的具体内容直接展示（statement 内联），而非只有跳转按钮。
     expect(html).toContain('用真实日志分层归因，不允许拍脑袋给结论。');
     expect(html).toContain('data-act="open-asset" data-id="aa-1"');
-    // 合并：资产区随整合卡渲染，不再有独立的资产卡；2026-09-29 单卡统一后
+    // 合并：资产区随整合卡渲染，不再有独立的资产卡；单卡布局下
     // 结果/上下文也并入主体卡——整页只有 1 张内容卡（同建议详情）。
     expect((html.match(/class="card[ ">]/g) || []).length).toBe(1);
     // 卡头不再出「查看资产」主按钮（明细已在卡内，与 review_candidates 同规则过滤）。
@@ -496,7 +496,7 @@ describe('整理详情页', () => {
     expect(html).toContain('这条整理任务不存在或已被清理');
   });
 
-  // ── 2026-09-15 详情页改造：结果三态 + 对话上下文 + 证据映射 ──
+  // ── 结果三态 + 对话上下文 + 证据映射 ──
 
   const contextData = {
     captureId: 'rcap-x',
@@ -540,11 +540,11 @@ describe('整理详情页', () => {
     expect(html).not.toContain('data-act="open-candidate"');
   });
 
-  it('P-r1-55：队列窗口外的旧任务读 candidateOutcomes 内联投影，不误报「没有发现值得留存的内容」', () => {
+  it('队列窗口外的旧任务读 candidateOutcomes 内联投影，不误报「没有发现值得留存的内容」', () => {
     // 生产条件复现：review-queue 视图只含最近 5 条处理记录（core.js
     // BLOCK_FETCHERS.candidates），旧任务的候选不在 S.candidates 里——
     // 此前详情页 join 队列全落空，「整理结果」被误报成空态，与同页
-    // 「已保存资产」区自相矛盾。数据层修（P-r1-55）：投影由主进程
+    // 「已保存资产」区自相矛盾。数据投影约束：投影由主进程
     // summarize 全量读池后内联进 workflow 记录，详情页直接读记录。
     const html = renderPage('organize', {
       captures: [{
@@ -606,7 +606,7 @@ describe('整理详情页', () => {
       sources: [], candidates: [pending],
       ...contextStore,
     }, { captureId: 'rcap-x' });
-    // 内嵌确认表单已删（审计 R1③）：不再有任何表单控件与就地确认动作。
+    // 内嵌确认表单已删：不再有任何表单控件与就地确认动作。
     expect(html).not.toContain('ca-pending-embed');
     expect(html).not.toContain('ca-card ca-candidate-detail');
     expect(html).not.toContain('data-f="judgment"');
@@ -616,15 +616,15 @@ describe('整理详情页', () => {
     expect(html).not.toContain('ca-cand-judgment-rcand-2');
     // 整理结果区：数量行 + 待确认完整内容块（可点直达确认页）+ 总览出口。
     expect(html).toContain('发现 1 条待确认内容');
-    // 2026-09-29 子安：具体内容必须在本页可见——块含标题与全文，整块
+    // 具体内容必须在本页可见——块含标题与全文，整块
     // open-candidate 深链直达该条的确认页；不再只给一行摘要让人去大队列翻。
     expect(html).toContain('ca-result-item is-clickable');
     expect(html).toContain('data-act="open-candidate" data-id="rcand-2"');
     expect(html).toContain('待确认');
     expect(html).toContain('发布前冒烟');
     expect(html).toContain('data-act="go-review"');
-    // 卡头=状态与元信息一行；动作按钮已沉卡尾（2026-09-29 子安拍板，同建议
-    // 详情的卡尾 actions-right）——卡头不再有按钮排。
+    // 卡头=状态与元信息一行；动作按钮已沉卡尾（与建议
+    // 详情共用卡尾 actions-right）——卡头不再有按钮排。
     const headAt = html.indexOf('ca-capture-head');
     expect(headAt).toBeGreaterThan(-1);
     const headSection = html.slice(headAt, html.indexOf('ca-capture-head') + 2000);
@@ -689,7 +689,7 @@ describe('整理详情页', () => {
     expect(coreSource).not.toContain("'recall.candidates.resume'");
   });
 
-  it('更新候选的差异确认卡：旧版对照 + 版本核对提示（2026-09-16 版本组）', () => {
+  it('更新候选的差异确认卡：旧版对照 + 版本核对提示', () => {
     const target = {
       id: 'aa-t1', title: '接口变更同步文档', type: 'rule', status: 'active',
       scope: 'general', statement: '接口变更后必须同步更新对应文档，并在群里告知。', version: '2', activeVersion: '2',
@@ -714,7 +714,7 @@ describe('整理详情页', () => {
     expect(reviewAligned).not.toContain('任务当时使用的是');
   });
 
-  it('版本块溯源行（2026-09-16/17 下沉改）：快照带 learningProvenance 时标来源，无信号不出该行', () => {
+  it('版本块溯源行：快照带 learningProvenance 时标来源，无信号不出该行', () => {
     const asset = {
       id: 'aa-src', title: '性能类提问需用真实日志做分层归因', type: 'rule', status: 'active',
       scope: 'general', version: '2', activeVersion: '1', updatedAt: '2026-09-15T00:00:00.000Z',
@@ -734,7 +734,7 @@ describe('整理详情页', () => {
     expect(selectedVersionPane(plain)).not.toContain('来自那次任务的复盘');
   });
 
-  it('KSTAR 证据与来源按版本显示（2026-09-17 下沉）：版本展开块内出证据 chips、KSTAR 来源行，点开「这次任务的经过」', () => {
+  it('KSTAR 证据与来源按版本显示：版本展开块内出证据 chips、KSTAR 来源行，点开「这次任务的经过」', () => {
     // 快照级的证据与信号：evidenceRefs/learningSignal 都冻在版本快照里——
     // 顶部不再显示资产级副本，全部进版本展开块。
     const asset = {
@@ -751,17 +751,17 @@ describe('整理详情页', () => {
     // ① 展开带 KSTAR 信号的 v1：证据 chips + 来源行都在版本块里；顶部无两折叠区。
     const open = renderPage('overview', {
       assets: [asset], proofs: [], sources: [], assetVersions: versions,
-      kstarSummaries: { 'kse-abc123': { id: 'kse-abc123', goal: '我想知道你的认知资产是怎么存的？', status: 'completed', at: '' } },
+      kstarSummaries: { 'kse-abc123': { id: 'kse-abc123', goal: '请说明合成项目的存储结构。', status: 'completed', at: '' } },
     }, { assetId: 'aa-k1', assetVersionId: '1' });
     expect(open).not.toContain('详细信息');
     expect(open).toContain('来自偏好扫描');
     expect(open).toContain('data-act="open-kstar-episode" data-id="kse-abc123"');
-    expect(open).toContain('任务复盘：我想知道你的认知资产是怎么存的');
+    expect(open).toContain('任务复盘：请说明合成项目的存储结构');
     // ② 点开态（route.kstarEpisodeId）：「这次任务的经过」就地出现在版本块内，
     // 白话化（标题/行标签/归因枚举翻译）。
     const episode = renderPage('overview', {
       assets: [asset], proofs: [], sources: [], assetVersions: versions, kstarSummaries: null,
-      kstarEpisode: { episodeId: 'kse-abc123', episode: { id: 'kse-abc123', goal: '我想知道你的认知资产是怎么存的？' }, review: { expectedResult: '给出技术结论', actualResult: '调用失败', outcome: 'worse_than_expected', attribution: 'execution_gap', lesson: '查模型配置类问题时，应从运行日志交叉验证，不要依赖模型自述。' } },
+      kstarEpisode: { episodeId: 'kse-abc123', episode: { id: 'kse-abc123', goal: '请说明合成项目的存储结构。' }, review: { expectedResult: '给出技术结论', actualResult: '调用失败', outcome: 'worse_than_expected', attribution: 'execution_gap', lesson: '查模型配置类问题时，应从运行日志交叉验证，不要依赖模型自述。' } },
     }, { assetId: 'aa-k1', assetVersionId: '1', kstarEpisodeId: 'kse-abc123' });
     expect(episode).toContain('这次任务的经过');
     expect(episode).toContain('当时的任务');
@@ -798,7 +798,7 @@ describe('整理详情页', () => {
 
     const chatAsset = { id: 'aa-chat', title: '对话沉淀资产', type: 'rule', status: 'active', version: '1', updatedAt: '2026-09-15T00:00:00.000Z', evidenceRefs: [{ kind: 'conversation', id: 'conv-1', subtype: 'session' }] };
     const kstarAsset = { id: 'aa-kstar', title: 'KSTAR 沉淀资产', type: 'personal', status: 'active', version: '1', updatedAt: '2026-09-16T00:00:00.000Z', evidenceRefs: [{ kind: 'execution', id: 'kse-9' }] };
-    // 单列表两线混排（2026-09-17 二次定调）：不分区，出身靠徽章。
+    // 单列表两线混排：不分区，出身靠徽章。
     const html = renderPage('overview', { assets: [chatAsset, kstarAsset], proofs: [], sources: [], kstarEpisodes: [] });
     expect(html).toContain('对话沉淀资产');
     expect(html).toContain('KSTAR 沉淀资产');
@@ -813,7 +813,7 @@ describe('整理详情页', () => {
     expect(legacy).toContain('对话沉淀资产');
   });
 
-  it('版本号显示在用版（2026-09-17 子安实测）：删掉 v3-v5 后游标停在 v5，界面上该显示在用的 v2', () => {
+  it('版本号显示在用版：删掉 v3-v5 后游标停在 v5，界面上该显示在用的 v2', () => {
     // 新列表不摆版本号，选中条目的详情标明真实在用版。
     const asset = { id: 'aa-v', title: '版本号显示', type: 'rule', status: 'active', version: '5', activeVersion: '2', updatedAt: '2026-09-16T00:00:00.000Z' };
     const catalog = renderPage('overview', {
@@ -830,16 +830,16 @@ describe('整理详情页', () => {
   it('我的认知不再在页尾重复列任务复盘，保留资产来源下钻入口', () => {
     const rows = renderPage('overview', {
       assets: [], proofs: [], sources: [],
-      kstarEpisodes: [{ id: 'kse-1', goal: '查认知资产是怎么存的', createdAt: '2026-09-17T10:00:00.000Z' }],
+      kstarEpisodes: [{ id: 'kse-1', goal: '查询合成项目存储结构', createdAt: '2026-09-17T10:00:00.000Z' }],
     });
     expect(rows).toContain('ca-library-page');
     expect(rows).not.toContain('class="details ca-kstar-episodes"');
     expect(rows).not.toContain('data-act="open-kstar-episode"');
-    expect(rows).not.toContain('查认知资产是怎么存的');
+    expect(rows).not.toContain('查询合成项目存储结构');
     expect(rows).toContain('这里还没有已保存的认知');
   });
 
-  it('证据分组（2026-09-17 B 档）：版本块内 KSTAR 任务复盘 / 对话与表态 两组分开带说明', () => {
+  it('证据分组：版本块内 KSTAR 任务复盘 / 对话与表态 两组分开带说明', () => {
     const asset = { id: 'aa-mix', title: '混两线证据', type: 'rule', status: 'active', version: '2', activeVersion: '2', updatedAt: '2026-09-16T00:00:00.000Z' };
     const html = renderPage('overview', {
       assets: [asset], proofs: [], sources: [],
@@ -866,14 +866,14 @@ describe('整理详情页', () => {
     expect(html).not.toContain('review_decision');
   });
 
-  it('证据诚实态（2026-09-18）：复盘记录不存在时显示来源不可用，未拉到不误标', () => {
+  it('证据诚实态：复盘记录不存在时显示来源不可用，未拉到不误标', () => {
     const asset = { id: 'aa-kmiss', title: '缺记录的证据', type: 'rule', status: 'active', version: '1', activeVersion: '1', updatedAt: '2026-09-16T00:00:00.000Z' };
     const versionsWith = (ref) => ({ assetId: 'aa-kmiss', usage: [], versions: [{ assetId: 'aa-kmiss', version: '1', at: '2026-09-16T01:00:00.000Z', snapshot: { title: 'T', statement: 'S', evidenceRefs: [ref] } }] });
     const kse = (extra = {}) => ({ kind: 'execution', id: 'kse-abc', taxonomyVersion: 1, subtype: 'execution', title: 'KSTAR requirement episode', ...extra });
     const base = { assets: [asset], proofs: [], sources: [], kstarSummariesSettled: [] };
     // ① 摘要已拉到 → 正常可点 chip，显示这次任务的目标。
-    const ok = renderPage('overview', { ...base, assetVersions: versionsWith(kse()), kstarSummaries: { 'kse-abc': { id: 'kse-abc', goal: '查认知资产是怎么存的' } } }, { assetId: 'aa-kmiss', assetVersionId: '1' });
-    expect(ok).toContain('任务复盘：查认知资产是怎么存的');
+    const ok = renderPage('overview', { ...base, assetVersions: versionsWith(kse()), kstarSummaries: { 'kse-abc': { id: 'kse-abc', goal: '查询合成项目存储结构' } } }, { assetId: 'aa-kmiss', assetVersionId: '1' });
+    expect(ok).toContain('任务复盘：查询合成项目存储结构');
     expect(ok).toContain('data-act="open-kstar-episode" data-id="kse-abc"');
     expect(ok).not.toContain('来源记录不可用');
     // ② 已请求过、响应里没有这条 → 诚实显示不可用，且不给可点入口。
@@ -894,7 +894,7 @@ describe('整理详情页', () => {
     expect(NS2.isKstarCandidate({ sourceRefs: [{ id: 'kse-abc', degraded: true }] })).toBe(false);
   });
 
-  it('候选详情点复盘 chip 就地展开（2026-09-17 修）：不跳页、块出现在证据区下方', () => {
+  it('候选详情点复盘 chip 就地展开：不跳页、块出现在证据区下方', () => {
     const cand = {
       id: 'rcand-ep', status: 'pending_review', suggestedType: 'rule', suggestedScope: 'general',
       judgment: '解释机制先给线性主线。', summary: '线性主线',
@@ -905,14 +905,14 @@ describe('整理详情页', () => {
     // 页面仍是 review（此前处理器硬编码 overview，点 chip 整页跳回"我的认知"）。
     const html = renderPage('review', {
       sources: [], candidates: [cand],
-      kstarEpisode: { episodeId: 'kse-1', episode: { id: 'kse-1', goal: '命中既有候选是怎么一个逻辑' }, review: { outcome: 'met_expected', attribution: 'execution_gap', lesson: '先给主线再补分支。' } },
+      kstarEpisode: { episodeId: 'kse-1', episode: { id: 'kse-1', goal: '请说明合成候选的匹配流程' }, review: { outcome: 'met_expected', attribution: 'execution_gap', lesson: '先给主线再补分支。' } },
     }, { candidateId: 'rcand-ep', kstarEpisodeId: 'kse-1' });
     expect(html).toContain('ca-episode-detail');
     expect(html).toContain('这次任务的经过');
-    expect(html).toContain('命中既有候选是怎么一个逻辑');
+    expect(html).toContain('请说明合成候选的匹配流程');
   });
 
-  it('使用记录引用已删版本（bug3）：标注"当时的版本后来已删除"', () => {
+  it('使用记录引用已删版本：标注"当时的版本后来已删除"', () => {
     const asset = { id: 'aa-del', title: '有历史使用的资产', type: 'rule', status: 'active', version: '2', activeVersion: '2', updatedAt: '2026-09-16T00:00:00.000Z' };
     const html = renderPage('overview', {
       assets: [asset], proofs: [], sources: [],
@@ -1066,7 +1066,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).toContain('data-act="proof-rate"');
   });
 
-  it('使用记录只认真实引用（2026-09-17）：版本保存/选用切换/治理操作不进使用记录', () => {
+  it('使用记录只认真实引用：版本保存/选用切换/治理操作不进使用记录', () => {
     const noisy = [
       ...proofs,
       { id: 'ev-3', kind: 'asset_version', occurredAt: '2026-09-16T01:00:00.000Z', refs: { assetId: 'aa-1', version: 3 } },
@@ -1077,14 +1077,13 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).toContain('带入或读取');
     expect(html).not.toContain('保存了新版本');
     expect(html).not.toContain('选用 v2 为在用版本');
-    // 噪音事件不进计数摘要；且口径已改（2026-09-25 US-602 AC4；2026-09-28 词表
-    // 统一）：宿主注入过一律归「被任务用过」，不再宣称「被实际使用」——是否
+    // 噪音事件不进计数摘要；且口径已改：宿主注入过一律归「被任务用过」，不再宣称「被实际使用」——是否
     // 采用只看「模型确认采用」。
     expect(html).toContain('带入或读取 2 次');
     expect(html).not.toContain('被实际使用');
   });
 
-  it('版本链（2026-09-16 版本组）：V1 归入同条目可展开，非在用版可「选用此版」', () => {
+  it('版本链：V1 归入同条目可展开，非在用版可「选用此版」', () => {
     const multi = {
       ...asset,
       version: '3',
@@ -1111,27 +1110,27 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).toContain('Renamed in v2');
     expect(html).toContain('上线前必须确认影响范围');
     // 在用版（v2）标「在用」，非在用版（v1）给「选用此版」（在用版无选用按钮；
-    // 2026-09-17 起每行带 data-version 供点开，判"无按钮"须带全 data-act 前缀）。
+    // 每行带 data-version 供点开，判"无按钮"须带全 data-act 前缀）。
     expect(html).toContain('<option value="1"');
     expect(html).not.toContain('data-act="select-asset-version" data-id="aa-1" data-version="2"');
     expect(html).toContain('在用');
-    // 按版本的使用效果列（M8）：v1 模型确认采用 3 次·被否定 1 次（词表统一）。
+    // 按版本的使用效果列：v1 模型确认采用 3 次·被否定 1 次（词表统一）。
     expect(html).not.toContain('模型确认采用 3 次');
     expect(html).not.toContain('被否定 1 次');
-    // 空版本标记（2026-09-16）：v3 与 v2 一字不差 → 标"内容未变"。
+    // 空版本标记：v3 与 v2 一字不差 → 标"内容未变"。
     expect(html).toContain('<option value="3"');
-    // 「已有更新的版本」提示（US-402 AC6）：被引用过（有使用回执）的历史版本
+    // 「已有更新的版本」提示：被引用过（有使用回执）的历史版本
     // 明说它已经不是最新——引用它的任务仍按当时冻结的内容执行，所以这不是
     // 错误状态。只给被引用过的 v1，没被引用过的 v3 不打扰。
     expect(html).not.toContain('8 处长期引用保留所选旧版本的快照');
     expect(html).toContain('data-prototype-version-select');
   });
 
-  it('整理报告（2026-09-25 US-403）：逐项改动 + 每项回滚入口 + 拿不准项就地处置 + 跳过如实标注', () => {
+  it('整理报告：逐项改动 + 每项回滚入口 + 拿不准项就地处置 + 跳过如实标注', () => {
     const report = {
       id: 'cr-1', trigger: 'user', createdAt: '2026-09-25T01:00:00.000Z', finishedAt: '2026-09-25T01:00:05.000Z',
       scanned: 12,
-      skippedSteps: ['补标签（标签系统尚未落地，待 Epic 2 / 012）'],
+      skippedSteps: ['补标签（该历史记录未执行）'],
       items: [
         { assetId: 'aa-1', kind: 'title_normalized', status: 'applied', before: '旧标题。', after: '旧标题', reason: '标题只有结尾标点不规范', ledgerRef: 'aa-1-updated-x', rollbackAnchor: '1' },
         { assetId: 'aa-2', kind: 'merged_duplicate', status: 'failed', before: '独立条目', after: '并入 aa-1', reason: '正文完全相同', note: 'revoked ability asset cannot be changed' },
@@ -1149,7 +1148,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(text).toContain('执行 1 项');
     expect(text).toContain('拿不准 2 项');
     expect(text).toContain('补标签');
-    expect(text).toContain('Epic 2');
+    expect(text).toContain('该历史记录未执行');
     // 逐项改动：改了什么 / 为什么 / 失败原因如实显示。
     expect(text).toContain('标题规范化');
     expect(text).toContain('旧标题。');
@@ -1166,7 +1165,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).not.toContain('data-act="cleanup-uncertain-dismiss" data-id="aa-4"');
   });
 
-  it('标题重起轮（2026-09-28 标题一等化 3.3 专项轮）：新 kind 有人话标签，报告页/设置页导语按轮次区分', () => {
+  it('标题重起轮：新 kind 有人话标签，报告页/设置页导语按轮次区分', () => {
     const regenReport = {
       id: 'cr-regen', trigger: 'user', createdAt: '2026-09-28T01:00:00.000Z', finishedAt: '2026-09-28T01:00:05.000Z',
       scanned: 18,
@@ -1183,7 +1182,7 @@ describe('资产详情（使用记录并入）', () => {
     // 重起轮导语换新文案（不做合并、全自动写入、写前备份）；规则轮导语在这轮上是假话。
     expect(text).toContain('由模型把不合格的标题重新拟一个简短的新标题');
     expect(text).not.toContain('只自动规范标题、合并正文完全相同的重复项');
-    // 设置页（2026-09-29 三轮合一）：入口恒为「完整整理」文案，不再按最近
+    // 设置页：入口恒为「完整整理」文案，不再按最近
     // 报告轮次切换导语（旧规则轮/重起轮只在报告页历史里区分）。
     const settings = renderPage('organize-settings', { cleanupReports: { loading: false, reports: [regenReport] } });
     expect(settings).toContain('夜间发现');
@@ -1197,7 +1196,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(ruleHtml).toContain('没有修改资产或候选');
   });
 
-  it('完整整理轮（2026-09-29 三轮合一）：round:full 用合并导语，tag_added 有「补标签」标签不落兜底', () => {
+  it('完整整理轮：round:full 用合并导语，tag_added 有「补标签」标签不落兜底', () => {
     const fullReport = {
       id: 'cr-full', trigger: 'user', round: 'full', createdAt: '2026-09-29T01:00:00.000Z', finishedAt: '2026-09-29T01:00:09.000Z',
       scanned: 30,
@@ -1222,10 +1221,10 @@ describe('资产详情（使用记录并入）', () => {
   it('整理报告空态：没有报告时给入口而不是空白页', () => {
     const html = renderPage('cleanup', { cleanupReports: { loading: false, reports: [] } });
     expect(html).toContain('还没有整理报告');
-    // 2026-09-29 集成维护：报告页右上按钮并入「立即维护」（跑全套）；页首有返回。
+    // 报告页右上按钮并入「立即维护」（跑全套）；页首有返回。
     expect(html).not.toContain('data-act="run-maintenance"');
     expect(html).toContain('data-act="go-back"');
-    // 2026-09-29 版式统一：页头与任务/建议详情同款（大标题+说明+右侧动作），
+    // 页头与任务/建议详情同款（大标题+说明+右侧动作），
     // 不再用 ui-page-header 紧凑组件——模块内三种详情页头收敛为一种。
     expect(html).toContain('检查建议与历史整理记录；当前检查不会修改资产或候选。');
     expect(html).not.toContain('ui-page-header');
@@ -1260,8 +1259,8 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).not.toContain('保留期还剩');
   });
 
-  it('生命周期记录走版本链读口（2026-09-25 真机修）：audit 由 assetVersions 提供时也要渲染', () => {
-    // 此前只认 asset.audit，而那个字段从未被赋值——整块审计区是死的（真机抓出）。
+  it('生命周期记录走版本链读口：audit 由 assetVersions 提供时也要渲染', () => {
+    // 管理记录从实际时间线读取，不依赖未提供的 asset.audit 字段。
     const html = renderPage('overview', {
       assets: [asset],
       assetVersions: {
@@ -1269,8 +1268,8 @@ describe('资产详情（使用记录并入）', () => {
         versions: [],
         usage: [],
         audit: [
-          { action: 'updated', at: '2026-09-25T01:47:12.562Z', actor: 'ai', reason: '用户原话：「把标题改成临时标题」', before: 'title=原名；version=1', after: 'title=临时标题；version=2' },
-          { action: 'rolled_back', at: '2026-09-25T01:48:26.914Z', actor: 'user', reason: '取证后回滚', before: 'title=临时标题；version=2', after: 'title=原名；version=3', rollbackAnchor: '2' },
+          { action: 'updated', at: '2026-09-25T01:47:12.562Z', actor: 'ai', reason: '合成用户原话：「把标题改成临时标题」', before: 'title=原名；version=1', after: 'title=临时标题；version=2' },
+          { action: 'rolled_back', at: '2026-09-25T01:48:26.914Z', actor: 'user', reason: '合成版本回滚', before: 'title=临时标题；version=2', after: 'title=原名；version=3', rollbackAnchor: '2' },
         ],
       },
     }, { assetId: 'aa-1' });
@@ -1282,12 +1281,12 @@ describe('资产详情（使用记录并入）', () => {
     expect(text).toContain('你 · 版本回滚');
     expect(text).toContain('title=原名；version=1');
     expect(text).toContain('title=临时标题；version=2');
-    // 台账行内「回滚到这次改动前」按钮已删（审计 R2，2026-09-28）：与版本区
+    // 台账行内「回滚到这次改动前」按钮已删：与版本区
     // 「切回此版」重叠且 0 使用；rollbackAnchor 数据仍在（服务端字段），只是
     // 不再渲染按钮。回滚走版本区。
     expect(html).not.toContain('data-act="rollback-asset"');
-    // 台账时间必须走统一格式化（2026-09-25 合并态走查修）：此前原样打印存储里的
-    // ISO UTC 串（`2026-09-25T01:47:12.562Z`），与同页版本记录的本地时间差 8 小时。
+    // 台账时间必须走统一格式化：此前原样打印存储里的
+    // ISO UTC 串，与同页版本记录的本地时间差 8 小时。
     // 判据取台账块内的 `.when` 单元格：值必须等于本文件装配的 fmtDate 出口输出
     // （harness 固定值），而不是任何原始 ISO 串。
     const ledger = html.slice(html.indexOf('使用与管理记录'));
@@ -1298,8 +1297,7 @@ describe('资产详情（使用记录并入）', () => {
   });
 
   it('历史版本仍可比较，不再显示长期引用统计提示', () => {
-    // 真机现状：v1 被 8 条已确认投影冻结，界面却没有标记——旧判据读 KSTAR 采用
-    // 回执（usage），而回执库里根本没有这条资产的记录，条件恒假。
+    // 即使采用回执为空，已被 8 条确认投影冻结的历史版本仍须显示引用状态。
     const multi = { ...asset, version: '2', activeVersion: '2', title: 'Renamed in v2', statement: '新内容' };
     const html = renderPage('overview', {
       assets: [multi],
@@ -1326,7 +1324,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).not.toContain('data-act="select-asset-version" data-id="aa-1" data-version="2"');
   });
 
-  it('版本行点开详情与真删入口（2026-09-17）：全文/逐项信息/删除按钮/在用版提示', () => {
+  it('版本行点开详情与真删入口：全文/逐项信息/删除按钮/在用版提示', () => {
     const multi = { ...asset, version: '3', activeVersion: '2', title: 'Renamed in v2', statement: '新内容' };
     const versions = {
       assetId: 'aa-1',
@@ -1365,8 +1363,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(list).not.toContain('ca-asset-availability');
     expect(list).toContain('data-act="edit-asset" data-id="aa-1"');
     expect(list).not.toContain('data-action="archive"');
-    // 头部只留标题+正文+开关：详细信息和证据来源已按版本下沉（2026-09-17
-    // 子安口径），顶部不再出现这两个折叠区。
+    // 头部只留标题+正文+开关：详细信息和证据来源已移入版本详情，顶部不再出现这两个折叠区。
     expect(list).not.toContain('已成功带入');
     expect(list).not.toContain('详细信息');
     expect(list).not.toContain('证据来源');
@@ -1415,7 +1412,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(draftEdit).toContain('>Draft statement</textarea>');
     expect(draftEdit).toContain('value="Draft applicable"');
     expect(draftEdit).toContain('value="Draft forbidden"');
-    // 敏感级三档控件已随机制删除（2026-09-28）：编辑表单不再有任何档位控件。
+    // 敏感级三档控件已随机制删除：编辑表单不再有任何档位控件。
     expect(draftEdit).not.toContain('data-level');
     expect(draftEdit).toContain('Draft Agent');
     expect(draftEdit).toContain('Draft Space');
@@ -1431,18 +1428,18 @@ describe('资产详情（使用记录并入）', () => {
     expect(archived).not.toContain('data-action="restore"');
   });
 
-  it('版本来源标签与空版本折叠（2026-09-17 报告建议 E）：标签替原文，迁移空版本默认隐藏可展开', () => {
+  it('版本来源标签与空版本折叠：标签替原文，迁移空版本默认隐藏可展开', () => {
     const multi = { ...asset, version: '3', activeVersion: '1', title: 'T', statement: 'S' };
     const versions = {
       assetId: 'aa-1', usage: [],
       versions: [
         { assetId: 'aa-1', version: '1', at: '2026-09-10T01:00:00.000Z', reason: 'review_decision:rd_x', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } },
-        { assetId: 'aa-1', version: '2', at: '2026-09-13T01:00:00.000Z', reason: 'legacy free-text scope "personal" → controlled term "general" (2026-09-13 scope enumeration)', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } },
+        { assetId: 'aa-1', version: '2', at: '2026-09-13T01:00:00.000Z', reason: 'synthetic legacy free-text scope "personal" → controlled term "general"', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } },
         { assetId: 'aa-1', version: '3', at: '2026-09-17T01:00:00.000Z', reason: 'user manual edit', snapshot: { title: 'T2', statement: 'S2', evidenceRefs: [] } },
       ],
     };
     const html = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1' });
-    // 「候选确认」→「确认沉淀」（2026-09-17 改）：review_decision 前缀两线
+    // 「候选确认」→「确认沉淀」：review_decision 前缀两线
     // 通用，内部流程词换成用户视角的说法。
     expect(html).toContain('确认沉淀');
     expect(html).toContain('手动编辑');
@@ -1457,7 +1454,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(expanded).not.toContain('toggle-asset-versions-noise');
   });
 
-  it('版本对比（2026-09-17 报告建议 C）：展开块与在用版就地对比，字段级 旧 → 新', () => {
+  it('版本对比：展开块与在用版就地对比，字段级 旧 → 新', () => {
     const multi = { ...asset, version: '2', activeVersion: '1', title: 'T1', statement: 'S1' };
     const versions = {
       assetId: 'aa-1', usage: [],
@@ -1476,7 +1473,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(open).toContain('T2 → T1');
     expect(open).toContain('当时范围与来源');
     expect(open).not.toContain('merge-asset-version');
-    // 头部下钻已随用户视角重构移除（2026-09-17）：版本信息全归版本区，
+    // 头部下钻已随用户视角重构移除：版本信息全归版本区，
     // 头部不再出现"已有更新的版本/看最新一版改了什么"。
     const latestMulti = { ...multi, activeVersion: '1' };
     const latest = renderPage('overview', { assets: [latestMulti], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1' });
@@ -1484,7 +1481,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(latest).not.toContain('看最新一版改了什么');
   });
 
-  it('已删除档（2026-09-17 报告建议 G）：默认视图不含已删除；「已删除」档与详情恢复入口', () => {
+  it('已删除档：默认视图不含已删除；「已删除」档与详情恢复入口', () => {
     const assets = [asset, { ...asset, id: 'aa-del', title: '已删条目占位', status: 'deleted' }];
     const list = renderPage('overview', { assets, proofs: [], sources: [] });
     expect(list).not.toContain('已删条目占位');
@@ -1496,7 +1493,7 @@ describe('资产详情（使用记录并入）', () => {
     expect(detail).toContain('data-action="restore"');
   });
 
-  it('单版本资产也出版本区（2026-09-17 下沉改：证据/详细信息的家在版本块）；头部不再有版本提示', () => {
+  it('单版本资产也出版本区；头部不再有版本提示', () => {
     const single = renderPage('overview', {
       assets: [{ ...asset, version: '1' }],
       proofs: [], sources: [],
@@ -1504,7 +1501,7 @@ describe('资产详情（使用记录并入）', () => {
     }, { assetId: 'aa-1' });
     // 守卫 ≥2 → ≥1：单版本资产的证据只存在唯一一版里，必须给它位置可看。
     expect(single).toContain('选择历史版本');
-    // 头部重构（2026-09-17 用户视角）：头部不再出现版本号/"已有更新的版本"
+    // 头部重构：头部不再出现版本号/"已有更新的版本"
     // ——版本信息全部归版本区（"在用"绿标 + 各版本行自明）。
     const stale = renderPage('overview', {
       assets: [{ ...asset, version: '3', activeVersion: '1' }],
@@ -1520,7 +1517,7 @@ describe('资产详情（使用记录并入）', () => {
   });
 });
 
-describe('交互反馈与响应式（2026-09-15 全面优化）', () => {
+describe('交互反馈与响应式', () => {
   const css = readFileSync(resolve(rootDir, 'src/renderer/cognition-assets.css'), 'utf8');
 
   it('写操作按钮有旋转圈、首载有骨架、静默刷新有进度条', () => {
@@ -1536,20 +1533,20 @@ describe('交互反馈与响应式（2026-09-15 全面优化）', () => {
     expect(loadingHtml).toContain('ca-skel-row');
   });
 
-  it('策略抽屉已退役：ca-drawer 及 0fr 过渡零残留（R-C1 死账清理的钉子）', () => {
+  it('策略抽屉已退役：ca-drawer 及 0fr 过渡零残留', () => {
     expect(css).not.toContain('.ca-drawer');
     expect(css).not.toContain('grid-template-rows: 0fr');
   });
 
   it('同页重画保持滚动位置（轮询不再弹回顶部），切页仍归零', () => {
     // render 里保存并恢复 #ca-scroll 的 scrollTop，且只在路由指纹相同时恢复。
-    // 2026-09-21 持久壳:恢复目标统一走 scrollRoot(main 或重取的 #ca-scroll)。
+    // 持久壳：恢复目标统一走 scrollRoot(main 或重取的 #ca-scroll)。
     expect(viewsSource).toContain('lastRenderKey');
     expect(viewsSource).toContain('restoreScroll');
     expect(viewsSource).toContain('scrollRoot.scrollTop = restoreScroll');
   });
 
-  it('设置项乐观更新：capture-policy 死委托已删净（2026-09-16 B3），aria-busy 反馈保留', () => {
+  it('设置项乐观更新：capture-policy 死委托已删净，aria-busy 反馈保留', () => {
     // 三档单选的 case 与声明随旧抽屉退役（设置页现为夜间开关两态）；
     // 乐观更新模式由 capture-toggle/nightly 等活路径承载。
     expect(appSource).not.toContain("case 'capture-policy'");
@@ -1562,7 +1559,7 @@ describe('交互反馈与响应式（2026-09-15 全面优化）', () => {
     expect(css).toContain('prefers-reduced-motion');
   });
 
-  it('英文 kicker 与 tab 副标题已删（2026-09-15 子安要求）：hero 只有标题，tab 只留标题文字', () => {
+  it('英文 kicker 与 tab 副标题已删：hero 只有标题，tab 只留标题文字', () => {
     // 源码级：hero 无 kicker 参数/元素；TABS 无 descKey；tab 渲染无 <small>。
     expect(viewsSource).not.toContain('ca-kicker');
     expect(viewsSource).not.toContain('<small>');
@@ -1617,9 +1614,9 @@ describe('引导层（app.js / core.js）', () => {
   });
 });
 
-/* ═══════════ G1/G2 补落点（承接表 01/02，2026-09-26 B 阶段复核）═══════════ */
+/* Task-failure feedback and candidate scope rendering. */
 
-describe('G1 任务执行失败与整理失败分别反馈（承接表 01）', () => {
+describe('任务执行失败与整理失败分别反馈', () => {
 
   it('已有整理记录的失败会话不重复计任务失败；无失败时不出该行', () => {
     const withCapture = renderPage('review', {
@@ -1633,7 +1630,7 @@ describe('G1 任务执行失败与整理失败分别反馈（承接表 01）', (
   });
 });
 
-describe('G2 候选卡补适用范围呈现（承接表 02）', () => {
+describe('候选卡适用范围呈现', () => {
   const scopeCandidate = {
     id: 'cand-scope', summary: '带范围的候选', suggestedType: 'rule',
     suggestedScope: 'architecture',

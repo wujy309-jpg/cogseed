@@ -1,15 +1,15 @@
 /**
- * cognition_kernel/resolve — 统一读接口（S1 契约层）。
+ * cognition_kernel/resolve — 统一读接口。
  *
  * 任务要取「关于我」的字段时只走这一个口，不再分别去读本体与资产库。
  * 输出 bound / missing 两段；missing 的四种原因各自对应一个**不同的用户动作**：
- *   no_value        → 应当提问并回填（438/439 的学习信号来源）
+ *   no_value        → 应当提问并回填
  *   restricted      → 值标了"仅自己可见"，需用户改敏感级
  *   not_authorized  → 来源资产被暂停/越权/不在适用范围，先治理再谈取用
  *   stale           → 本体值指向的来源资产已不存在，修引用
  * 调用方因此不需要再猜"为什么没取到"。
  *
- * 取值规则（拍板口径 2026-10-02）：
+ * 取值规则：
  *   1. 本体手编值优先（用户直说的算）；
  *   2. 带 assetId 的值是**引用态**：从可用的来源资产取 live 正文，避免陈旧副本；
  *   3. restricted 的值不进任务读取；
@@ -173,7 +173,7 @@ export function resolveFromSnapshot(
 
 /** 读一份快照：本体值 + personal 资产（含任务期准入判定结果）。
  *
- * S4-a 起统一库优先：迁移/新写入产生的断言（store）按 (groupId,fieldName)
+ * 统一库优先：迁移/新写入产生的断言（store）按 (groupId,fieldName)
  * 槽位遮蔽旧账（po 值/资产投影）——同槽以库为准；库为空（未迁移）时行为
  * 与旧实现逐位一致。消费面因此可以逐个切到统一库而不需要一次性搬家。
  */
@@ -212,9 +212,9 @@ export async function loadPersonalSourceSnapshot(
     }
   }
 
-  // 统一库断言（S4-a）：库值全量进场；旧值被同槽（groupId+fieldName）或
+  // 统一库断言：库值全量进场；旧值被同槽（groupId+fieldName）或
   // 同名字段（库内无组断言按 fieldName 全局遮蔽）让位——任务侧寻址键是字段名。
-  // 治理态同口径（2026-10-03 待办#4 + CodeRabbit 校正）：paused/archived
+  // 治理态同口径：paused/archived
   // **占槽但不供值**——槽位已归统一库，暂停/归档只是收回这条值，不能让迁移
   // 前的旧值复活；deleted 才释放槽位回落旧值。restricted 随 active 值透传。
   const store = loadCognitionStoreSync(uid);

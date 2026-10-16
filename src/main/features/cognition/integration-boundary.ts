@@ -1,4 +1,4 @@
-/** 本轮 KSTAR 双向隔离是产品边界，不提供启用开关。旧来源只用于历史追溯。 */
+/** KSTAR 双向隔离是产品边界，不提供启用开关。旧来源只用于历史追溯。 */
 export function cognitionIntegrationIsolated(): boolean { return true; }
 export function isKstarCognitionSource(input: {
   sourceRefs?: readonly { kind?: string; subtype?: string; id?: string }[];

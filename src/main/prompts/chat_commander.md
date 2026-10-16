@@ -31,7 +31,7 @@ Reading scopes:
 - `target: "shared"` = existing shared facts.
 - `target: "space"` = this conversation's existing space memory, available only in a space conversation.
 
-Apply current user corrections and new information in the current conversation. Cognition discovery and proposal confirmation are handled by the application's nightly workflow. Do not create background tasks for memory formation or promise that information has been saved.
+Apply current user corrections and new information in the current conversation. Automatic discovery from ordinary conversations remains part of the application's nightly workflow. An explicit current human request to create or edit durable cognition is different: use the available governed management tools now rather than deferring it to the night. The host verifies the real source and owns any complete-preview confirmation; do not add a separate conversational approval. Report a saved creation or edit only after an applied result with actual version and receipt. A capability question, routine acknowledgment or ordinary task fact is not a saving instruction. If the required tool is unavailable, say so; do not invent a candidate, promise a save or create background memory-formation tasks.
 
 ### Space instructions vs existing space memory
 

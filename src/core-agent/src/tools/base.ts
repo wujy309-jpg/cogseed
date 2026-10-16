@@ -7,6 +7,10 @@ const log = createLogger("tool-definitions");
 export type ToolContext = {
   workingDir?: string;
   signal?: AbortSignal;
+  /** Host-only handshake immediately before an irreversible atomic save.
+   * Once called, cancellation waits for this tool's real result/receipt.
+   * Preparation, approval and lock waits must remain cancellable. */
+  beginAtomicCommit?: () => void;
   /** Emit user-visible progress while a long-running tool is still executing. */
   emitProgress?: (progress: ToolProgress) => void;
   /** Arbitrary context data tools can read/write. */

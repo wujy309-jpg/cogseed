@@ -1,30 +1,10 @@
 /**
- * 正式资产策略的唯一真相源（PRD 3.6）。
+ * 正式资产策略的统一定义，供运行时、界面和证明链共用。
  *
- * 收口理由：此前三个概念散在各处、还互相串。`candidate-service` 决定写哪个
- * lifecycleStatus，`proof-service` 决定何时推进 maturity，`asset-semantics`
- * 决定能不能默认带入，`p3394/asset-events` 又自立了第三套状态词汇
- * （asset_user_confirmed / asset_transfer_verified / ...；该账本已随 N-1 删除），
- * `context-projection` 干脆一个都不查。
- *
- * 这里把三条轴钉死，并且**只在这里**解释它们：
- *
- *   lifecycleStatus  这条资产是谁写进来的（来源/provenance）
- *                    user_confirmed_unverified          用户真的审过
- *                    automatically_extracted_unverified 会话自动抽取线
- *                    system_precipitated_unverified     KStar 自进化线
- *
- *   maturity         被验证到哪一步
- *                    seed / bud                  尚未证明被正确带入过
- *                    transfer_validated          真实加载 + Receipt
- *                    effectiveness_validated     可比评价证明结果更好
- *
- *   status           现在还允不允许用（治理态）
- *                    active 之外一律停用
- *
- * 关键：来源不决定成熟度。KStar 沉淀的资产 lifecycleStatus 是
- * system_precipitated_unverified，但它**不因为"是 KStar 来的"就更成熟**——
- * 没人确认过就仍在 seed 档。
+ * lifecycleStatus 表示来源：用户确认、会话自动抽取或 KStar 自动沉淀。
+ * maturity 表示已有证据：尚未验证、真实带入验证或可比结果的效果验证。
+ * status 表示当前治理状态，只有 active 可以使用。
+ * 来源、成熟度和治理状态相互独立；自动来源本身不构成带入或效果证据。
  */
 
 import type { RecallAbilityAssetLifecycleStatus } from '../candidate-service';
@@ -54,8 +34,8 @@ export function resolveAssetLifecycle(
   return asset.lifecycleStatus || 'automatically_extracted_unverified';
 }
 
-/** 验证轴：被验证到哪一步。这里只做读取与归一，**推进**由证明链驱动
- *  （PR-E：Receipt + TransferProof），任何调用方都不得自行升档。 */
+/** 验证轴：被验证到哪一步。这里只做读取与归一，推进由 Receipt + TransferProof
+ *  证明链驱动，任何调用方都不得自行升档。 */
 export function resolveAssetMaturity(
   asset: Pick<AssetPolicyInput, 'maturity'>,
 ): FormalAssetMaturity {
@@ -74,7 +54,7 @@ export function isTransferVerified(asset: Pick<AssetPolicyInput, 'maturity'>): b
 }
 
 /**
- * 默认使用契约（PRD 3.6）。合并了原来分散的两步：
+ * 默认使用契约：
  * 成熟度 → 基础档位，再叠加跨作用域确认。
  *
  * 返回值语义：
@@ -87,9 +67,10 @@ export function resolveAssetUsePolicy(
   asset: AssetPolicyInput,
   sameScope: boolean,
 ): AbilityAssetUsePolicy {
-  // 明确保存个人记忆的用户授权可以允许范围内默认使用，
-  // 但不把成熟度或效果证明升档。seed 不通过这条历史兼容授权。
-  if (asset.defaultUseAuthorized && isUserConfirmed(asset) && asset.status === 'active' && asset.maturity !== 'seed') {
+  // The host verifies the complete human decision before supplying this flag.
+  // Its narrow edit-root route may authorize a seed without promoting it;
+  // an unreviewed seed and the historical personal-memory path remain blocked.
+  if (asset.defaultUseAuthorized && isUserConfirmed(asset) && asset.status === 'active') {
     return sameScope ? 'auto' : asset.crossScopeConfirmedAt ? 'prompt' : 'confirm';
   }
   const base = resolveDefaultUsePolicy(
@@ -100,11 +81,7 @@ export function resolveAssetUsePolicy(
   return applyCrossScopeConfirmation(base, crossScopeConfirmed);
 }
 
-/** 「静默默认注入」的唯一判据。PRD 3.6：User Confirmed / Unverified
- *  仅在用户主动选择时使用，不得静默默认注入；Transfer Verified 起才可以。
- *
- *  注意这与 `resolveAssetUsePolicy` 不同：那个回答"能用到什么程度"，
- *  这个回答"能不能在用户没挑的情况下自己进去"。 */
+/** 是否允许无需本轮主动选用的默认注入，统一由 resolveAssetUsePolicy 判定。 */
 export function allowsSilentDefaultInjection(
   asset: AssetPolicyInput,
   sameScope: boolean,
@@ -119,7 +96,7 @@ export function allowsSilentDefaultInjection(
  *  在系统里长出第二种拼法。
  *
  *  注意：这里只回答"这个结论对应哪一档"，**不回答"够不够格推进"**。
- *  PRD 3.6 的 Transfer Verified 还要求 ContextReuseReceipt 落库；调用方必须
+ *  真实带入验证还要求 ContextReuseReceipt 落库；调用方必须
  *  在推进成熟度前验证 receiptId，不能只凭任务成功状态升档。 */
 export function maturityForTransferOutcome(status: string): FormalAssetMaturity | undefined {
   return status === 'succeeded' ? 'transfer_validated' : undefined;

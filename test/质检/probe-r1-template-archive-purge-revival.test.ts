@@ -1,33 +1,6 @@
-/**
- * 探针（本轮红队-越权与状态）：purge 级联对「模板卸载归档目录」零覆盖——
- * 已清资产的投影值可借「重装模板+恢复原数据」复活（复活族第三存储面）。
- *
- * 读码链路：
- *  - 资产侧投影级联 removeTemplateFieldValuesForRecallAsset
- *    （personal_ontology_template_files.ts:784-809）只扫 `doc.groups` 里
- *    kind==='template' 的**活组**（:792/:799-800）——文件内 grep "archive"
- *    零命中，`_backup_<ts>/` 归档目录不在扫描面；
- *  - 卸载 uninstallTemplateFile（:404-453）把模板组整组渲染成方言 md 归档到
- *    `_backup_<ts>/<templateId>.md`（:414-420，renderTemplateGroupMarkdown 的
- *    值行携带 recallAssetId 标记，:112）再把组从 doc.groups 移除（:441-445）；
- *  - 重装 installTemplateFile(uid, templateId, restoreData=true)（:239-277）
- *    经 readTemplateArchive + templateGroupFromArchiveText 整组复活，归档里的
- *    recallAssetId 映射回 assetId（:143），**无任何资产存活检查**；
- *  - 与待议 P-r1-14（活普通组孤儿）/ P-r3-6（回收站 trash 面）同一族，但存储面
- *    是第三个：归档目录。拍板级联范围时若只扫活组+trash，本面仍漏。
- *
- * 预言：模板组装投影值 → 卸载归档 → 资产 purge 级联 removed=0（扫不到归档）
- * → 重装恢复 → 已清资产的投影值带 assetId 原样复活（且按只读守卫锁死）。
- *
- * seed 用真实通道 appendExistingTemplateFieldValueToRef(recallAssetId=...)（:722，
- * 投影同步的生产写入路径），不经 writeGroupContent 伪造。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **P-r1-90**——已拍板「恢复侧过滤
- * 已清资产」（决策卡 A-数据保真组）：级联保持只扫活组（「卸载=数据保留」
- * 设计不破），恢复入口（installTemplateFile restoreData）对带 assetId 所有权
- * 标记的值按资产存活+可投影（type=personal + status=active）过滤。主用例
- * 2026-10-02 反转断言启用：已清资产的投影值不再随重装恢复复活；对照组保留。
- */
+/** 模板卸载归档不被资产清除级联扫描；重装恢复时须重新判断带 assetId
+ * 标记的值是否仍可投影，防止已清除的资产正文从归档复活。
+ * 无资产所有权标记的用户内容与模板组本身仍按原恢复契约保留。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -87,8 +60,8 @@ async function loadTemplates() {
   return import('../../src/main/features/personal_ontology_template_files');
 }
 
-describe('探针 r1 › 模板卸载归档：已清资产投影借重装复活（复活族第三面）', () => {
-  it('【P-r1-90 已修·恢复侧过滤】卸载归档→资产投影级联清（归档不扫，保持「卸载=数据保留」）→重装恢复→已清资产的投影值被过滤，不复活', async () => {
+describe('模板卸载归档：已清资产投影借重装复活（复活族第三面）', () => {
+  it('卸载归档→资产投影级联清（归档不扫，保持「卸载=数据保留」）→重装恢复→已清资产的投影值被过滤，不复活', async () => {
     const t = await loadTemplates();
 
     // ① 装模板，经生产投影通道写入带资产所有权标记的模板值。

@@ -1,16 +1,14 @@
 /**
- * 转写词表管理页（方案 §七「词表管理」/§2.1-11 贡献包）——知识库里的一个模态面板。
+ * 转写词表管理页——知识库里的一个模态面板。
  *
- * 为什么做成模态而不是新页面：转写纠错的宿主是知识库文件查看器（方案 §六
- * 的"宿主二选一"），词表管理必须从那里一步可达；新开一个顶层路由要动导航与
- * 路由表，收益不成比例。
+ * 词表管理作为模态面板，从知识库文件查看器中的转写纠错入口直接可达。
  *
  * 职责边界：
  *   - 只调 `transcript.glossary.*` IPC；不直接读写文件、不改原文；
  *   - 列表支持 搜索 / 按 kind·riskLevel·status 过滤 / 批量暂停·启用·删除；
  *   - 导入导出都是**显式的用户动作**（导出 JSON 文本另存知识库；导入前先给出
  *     "会新增/会更新/会跳过"的预览，不静默覆盖）；
- *   - 人名类默认不导出（方案 §5.1 红线）。
+ *   - 人名类默认不导出。
  *
  * Renderer 约束：classic script、可见文案走 i18n、控件走共享原语
  * （uiModal/uiField/uiButton/uiEmptyState），图标来自 icons.js。
@@ -37,7 +35,7 @@
   /**
    * 请知识库视图重载目录树：词表导出走 `library.writeText` 直接落盘，
    * 而库列表（contexts.js / kb-workbench.js）渲染的是各自进入视图时的树快照，
-   * 不显式通知就会出现"已另存：…"却列表里找不到文件（同一个真机问题）。
+   * 不显式通知就会出现"已另存：…"却列表里找不到文件。
    */
   function notifyLibraryChanged() {
     try {
@@ -105,7 +103,7 @@
     };
   }
 
-  /** 角色标签（filler 在方案里是"口癖删除"类，展示要能分辨）。 */
+  /** 角色标签（filler 是"口癖删除"类，展示要能分辨）。 */
   function kindKey(kind) {
     return KINDS.includes(kind) ? kind : 'term';
   }
@@ -130,7 +128,7 @@
   }
 
   /**
-   * 会议引用指标的呈现行（纯函数，specs/013 T057 / US-506）。
+   * 会议引用指标的呈现行（纯函数）。
    *
    * 纪律（不变量「指标不编数字」）：每项比率**必须**带分子/分母与样本数，
    * 口径说明与数字一起呈现（不只裸数）；`rate === null`（无样本）如实显示
@@ -216,7 +214,7 @@
       importText: '',
       importMode: 'merge',
       importPreview: null,
-      /** 坏档三件套（P-r1-88）：词表文件损坏时主进程已 copy 备份并拒绝写，
+      /** 坏档状态：主进程已登记的损坏项会阻止写入，
        *  这里持有 cognition.corrupt.list 回传的登记项，渲染「从备份恢复/重置」入口。 */
       corrupt: null,
     };
@@ -264,7 +262,7 @@
       host.dataset.tone = state.statusTone;
     }
 
-    /** 本地埋点汇总（方案 §8.2）：确认耗时中位数 / 保留率分布 / 词表里程碑。 */
+    /** 本地埋点汇总：确认耗时中位数 / 保留率分布 / 词表里程碑。 */
     async function loadMetrics() {
       try {
         const result = await root.cogseed.invoke('transcript.metrics.summary', {});
@@ -306,8 +304,8 @@
     }
 
     /**
-     * 会议引用指标（specs/013 T057 / US-506）：**独立通道独立数据源**
-     * （meeting-metrics.jsonl），与既有 transcript 指标分两区呈现（D16）。
+     * 会议引用指标：**独立通道独立数据源**
+     * （meeting-metrics.jsonl），与既有 transcript 指标分两区呈现。
      * 通道失败 ⇒ 置 null（分区不渲染，不编数字、不弹错误框）。
      */
     async function loadMeetingMetrics() {
@@ -711,7 +709,7 @@
       }
     }
 
-    // ── 坏档三件套·恢复入口（P-r1-88，B 段已批「从备份恢复/重置」一键）────
+    // ── 坏档恢复入口────
 
     async function loadCorruptState() {
       try {
@@ -802,8 +800,8 @@
         log?.warn('glossary reload failed', { error: error?.message || String(error) });
         setStatus(t('kb.glossary.load_failed', '读取词表失败，请稍后重试。'), 'warning');
       } finally {
-        // 词表坏档时上面的 list 会失败（主进程拒读）——坏档登记仍然拉取，
-        // 让「从备份恢复/重置」入口出现在面板上（P-r1-88 恢复入口）。
+        // 无论词表列表是否可读，都独立拉取坏档登记，
+        // 让「从备份恢复/重置」入口出现在面板上。
         await loadCorruptState();
         state.busy = false;
         render();
@@ -1039,11 +1037,11 @@
     }
 
     /**
-     * 装入方案附 A 的初始词表（幂等）。方案明写"默认不入册"的词（`for → Foo`）
+     * 装入初始词表（幂等）。高危映射（如 `for → Foo`）默认不入册，相关词条
      * 不在种子里，返回里会说明被排除的是哪些，避免用户以为装漏了。
      */
     /**
-     * 贡献包导出（方案 §五 P3-1）：人名默认不导；包里不含本地文档名/runId。
+     * 贡献包导出：人名默认不导；包里不含本地文档名/runId。
      * 生成后写进同一个导出文本框，用户可以直接另存或复制给别人。
      */
     async function exportPack() {
@@ -1132,7 +1130,7 @@
       }
     }
 
-    /** 检索前 query 同义改写开关（方案 §五 P2-3）：默认关，改检索行为要用户点头。 */
+    /** 检索前 query 同义改写开关：默认关，改检索行为要用户点头。 */
     async function toggleQueryRewrite() {
       if (state.busy) return;
       state.busy = true;
@@ -1211,7 +1209,7 @@
       }
       const del = event.target.closest('[data-glo-delete]');
       if (del) { void deleteOne(del.getAttribute('data-glo-delete')); return; }
-      // 坏档三件套·恢复入口（P-r1-88）：从备份恢复 / 重置。
+      // 坏档恢复入口：从备份恢复 / 重置。
       const corruptOp = event.target.closest('[data-glo-corrupt-op]');
       if (corruptOp) { void runCorruptRecovery(corruptOp.getAttribute('data-glo-corrupt-op')); return; }
       // 候选区的采纳/丢弃入口已随「模型建议并入扫描」移除（候选在转写纠错面板里勾选即确认），

@@ -1,19 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 /**
- * 任务复盘详情（就地展开块）的加载/失败态（2026-09-30 认知资产质检 R1）：
- *
- * 旧实现只写 { episodeId, episode, review }：catch 吞掉异常后视图拿到
- * 「episodeId 在场但无数据」的状态，渲染成只有标题的空详情块——失败被
- * 伪装成「这次任务什么都没有」。与同文件 loadExperienceDetail 的既有惯例
- * 对齐（读不到 ≠ 没有，空态与失败分开呈现）：
- *  - core：初始写入带 loading:true；catch 显式置 failed（不用 !data 推断，
- *    成功但空载荷 ≠ 失败）；终态落 { episodeId, episode, review, loading, failed }。
- *  - views：loading 时显示读取中文案（含初始写入阶段）；failed 时显示失败
- *    说明 + 「收起」按钮（收起后重新点开会重新走 loadKstarEpisode，天然重试）。
- *
- * 装配与 cognition-kstar-summaries.test.ts 同构：core.js 是 IIFE，require
- * 一次即挂 window.CogAssets，唯一 IPC 出口是 window.cogseed.invoke。
+ * 任务复盘详情明确区分 loading、failed 和成功但空的结果。
+ * 初始请求置 loading，失败显式置 failed；失败块显示说明和收起动作，重新
+ * 展开可重试。core 与 views 共用同一状态；IPC 由内存桩提供。
  */
 
 const globalScope = globalThis as unknown as Record<string, unknown>;

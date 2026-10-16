@@ -1,7 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+
+vi.mock('../../../../src/main/features/auth', () => ({ listEntriesForUser: async () => ({ entries: [
+  { provider: 'openai', model: 'first' }, { provider: 'cp:custom', model: 'second' }, { provider: 'configured', model: 'replacement' },
+] }) }));
 
 import {
   isWithinNightlyWindow,
@@ -27,9 +31,7 @@ afterEach(() => {
 
 describe('Recall capture settings', () => {
   it('defaults to nightly capture with a ten-minute quiet period and persists a validated manual policy', async () => {
-    // 2026-10-08 认知资产全量重构（U01）：默认 smart→manual（2026-09-16 B3）
-    // 再→nightly——夜间自动发现成为默认，用户不管理来源/队列/日常调度；
-    // 终端闸 terminalCaptureEnabledFor 与夜间增量清扫都按 nightly 生效。
+    // 夜间发现为默认策略；终态闸和夜间增量清扫按同一策略生效。
     // 存量显式 manual/paused 配置持久保存，不被新默认覆盖。
     await expect(readRecallCaptureSettings('capture-user')).resolves.toMatchObject({
       enabled: true,
@@ -89,8 +91,7 @@ describe('Recall capture settings', () => {
   });
 
   it('normalizes legacy execution policies to nightly without rewriting historical settings', async () => {
-    // 2026-09-16 B3 收窄：存量 smart/immediate 不做归一（waiting_quiet 路径
-    // 仍是活代码），仅默认值改为 manual。
+    // 历史执行策略读取时归一为 nightly，但不回写历史配置。
     const store = await import('../../../../src/main/features/recall/store');
     await store.updateRecallJsonRecord('capture-user', 'capture-settings', 'settings', () => ({
       schemaVersion: 1,

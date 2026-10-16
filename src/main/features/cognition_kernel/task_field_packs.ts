@@ -1,9 +1,9 @@
 /**
- * cognition_kernel/task_field_packs — 任务槽位需求包（S2；438 P1 扩三轴，2026-10-07）。
+ * cognition_kernel/task_field_packs — 任务槽位需求包。
  *
- * 419/438 的"任务侧声明所需槽位"：一个任务包声明它开工前需要哪些认知内容，
+ * 一个任务包声明它开工前需要哪些认知内容，
  * 由取件窗口（resolve.ts / slots.ts）算出"已有/缺"。三轴：
- *   personal（个人字段）  关于我的短句事实（字段名与参考实现对齐）；
+ *   personal（个人字段）  关于我的短句事实；
  *   ontology（本体）      本体事实（对象 × 关系）与适用规则——按名字模式声明，
  *                         主体在调用时从任务上下文绑定（如"项目甲"）；
  *   asset（方法资产）     方法／规则／模板能力资产——按资产类型＋标题声明。
@@ -50,48 +50,8 @@ export interface AssetSlotRef {
   required?: boolean;
 }
 
-/** 报销（参考实现 expense-assistant / Jev 插件的 required_fields 归并去重）。 */
-const EXPENSE_FIELDS: readonly PersonalFieldRef[] = [
-  { fieldName: '姓名' },
-  { fieldName: '工号' },
-  { fieldName: '部门' },
-  { fieldName: '岗位' },
-  { fieldName: '银行卡号' },
-  { fieldName: '开户行' },
-  { fieldName: '审批人' },
-  { fieldName: '成本中心' },
-  { fieldName: '项目归属' },
-  { fieldName: '发票抬头' },
-  { fieldName: '纳税人识别号' },
-  { fieldName: '常驻城市' },
-  { fieldName: '住宿标准' },
-  { fieldName: '常用交通工具' },
-  { fieldName: '费用承担部门' },
-  { fieldName: '联系电话' },
-  { fieldName: '工作邮箱' },
-  { fieldName: '提交窗口' },
-  { fieldName: '是否需行程单' },
-  { fieldName: '报销备注偏好' },
-];
-
-/** 招投标（参考实现 bid-assistant 的个人 A-box 节点）。 */
-const BID_FIELDS: readonly PersonalFieldRef[] = [
-  { fieldName: '姓名' },
-  { fieldName: '身份证号' },
-  { fieldName: '学历' },
-  { fieldName: '执业资格证书编号' },
-  { fieldName: '社保缴纳地' },
-  { fieldName: '拟任项目角色' },
-  { fieldName: '代表业绩' },
-  { fieldName: '联系电话' },
-  { fieldName: '工作邮箱' },
-  { fieldName: '投标保证金账户' },
-  { fieldName: '开户许可证号' },
-  { fieldName: '公司授权代表' },
-];
-
 /**
- * 周报（PRD §3 贯穿验收的现实例子）：三轴齐用。
+ * 周报任务同时使用三轴槽位。
  * 本体轴绑定"项目的固定接收人"事实与周报规则；资产轴找周报模板。
  */
 const WEEKLY_REPORT_SLOTS = {
@@ -106,8 +66,6 @@ const WEEKLY_REPORT_SLOTS = {
 };
 
 export const TASK_FIELD_PACKS: Record<string, TaskFieldPack> = {
-  expense: { id: 'expense', title: '报销', fields: EXPENSE_FIELDS },
-  bid: { id: 'bid', title: '招投标', fields: BID_FIELDS },
   weekly_report: { id: 'weekly_report', title: '周报', ...WEEKLY_REPORT_SLOTS },
 };
 

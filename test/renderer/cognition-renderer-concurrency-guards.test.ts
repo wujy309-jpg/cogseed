@@ -1,21 +1,7 @@
-/**
- * 渲染层并发守卫回归（2026-10-01 待议拍板批次 · wo-b6-lock-renderer）。
- *
- * P-r2-20（刷新 drain 与 reload 无互斥 → 世代号作废过期响应）：
- *   刷新 drain（flushPendingRefresh）与 reload/snapshot 对同一区块并发发起两次
- *   读取，响应乱序时旧数据覆盖新数据（跨窗口已删资产复活显示直到下次广播）。
- *   修法=每区块单调世代号：发起 +1，落地前又发起过新读取的本次响应作废。
- *
- * P-r2-40（迁移状态读取进入即抹瞬态 → 保留现值+在途守卫）：
- *   loadExperienceMigrationStatus 此前进入即把 lastRun 抹 null、丢 running/
- *   previewLoading（扫描在途提示被抹、重现旧清单），读失败还把旧 lastRun 置
- *   null 误报「还没执行过」。修法=在途不重入+读取期间保留全部现值+失败保留
- *   现值+落地前被 run 终态接管则不落地。
- *
- * 手法：vm 沙箱装载真实 core.js（cognition-renderer 既有助手），stub
- * window.cogseed.invoke 用手动 deferred 摆乱序；drain 经 setupChangeRail 的
- * 真实广播入口触发（不走捷径直接调内部函数）。
- */
+/** Renderer read ordering and in-flight state contracts.
+ * Block generations discard stale responses from overlapping refresh/reload.
+ * Migration status reads preserve current transient state, avoid re-entry and
+ * cannot overwrite a newer run outcome. Deferred IPC uses the real change rail. */
 import { describe, expect, it, vi } from 'vitest';
 import { loadCognitionAssets } from './helpers/cognition-renderer';
 
@@ -31,7 +17,54 @@ async function settle(rounds = 30) {
   for (let i = 0; i < rounds; i += 1) await Promise.resolve();
 }
 
-describe('P-r2-20 › 区块读取世代号：drain 与 reload 双飞乱序，旧响应作废', () => {
+describe('详情缓存读取身份', () => {
+  it.each([
+    ['versions', 'loadAssetVersions', 'assetVersions', 'recall.assets.versions.list', { versions: [{ version: 'new' }] }],
+    ['timeline', 'loadAssetTimeline', 'assetTimeline', 'recall.timeline.forAsset', { items: [{ id: 'new' }], realUsageKinds: ['usage_recorded'] }],
+    ['adoption', 'loadAdoptionReceipts', 'adoptionReceipts', 'recall.assets.adoptionReceipts', { receipts: [{ id: 'new' }] }],
+  ])('same-id %s requests cannot overwrite a newer success with an old success or failure', async (_label, loader, key, channel, body) => {
+    for (const stale of [{ ok: true, versions: [], items: [], receipts: [], realUsageKinds: [] }, { ok: false, error: 'old failure' }]) {
+      const old = deferred();
+      let count = 0;
+      const { ns, store } = loadCognitionAssets({}, {}, { cogseed: { invoke: vi.fn(async (name: string) => {
+        if (name === channel && ++count === 1) return old.promise;
+        return { ok: true, ...(body as object) };
+      }) } });
+      const first = ns[String(loader)]('same-asset', true);
+      await ns[String(loader)]('same-asset', true);
+      const current = store[String(key)];
+      old.resolve(stale);
+      await first;
+      expect(store[String(key)]).toBe(current);
+      expect(store[String(key)].failed).toBe(false);
+      if (key === 'assetTimeline') expect(store.realUsageKinds).toEqual(['usage_recorded']);
+    }
+  });
+
+  it.each(['success', 'failure'])('reload discards an old evidence %s without notifying or ending the replacement request', async outcome => {
+    const old = deferred(), current = deferred();
+    let calls = 0;
+    const { ns, store } = loadCognitionAssets({}, {}, { cogseed: { invoke: vi.fn(async (channel: string) => {
+      if (channel === 'recall.reviewEvidence.read') return ++calls === 1 ? old.promise : current.promise;
+      return { ok: true, assets: [], candidates: [] };
+    }) } });
+    const first = ns.loadReviewEvidence('asset', 'same-asset');
+    await ns.reload();
+    const replacement = ns.loadReviewEvidence('asset', 'same-asset');
+    const latest = store.reviewEvidence['asset:same-asset'];
+    const notified = vi.fn(); ns.onChange(notified);
+    old.resolve(outcome === 'success' ? { ok: true, items: [{ id: 'old' }] } : { ok: false, error: 'old failure' });
+    await first;
+    expect(store.reviewEvidence['asset:same-asset']).toBe(latest);
+    expect(latest).toMatchObject({ loading: true, loaded: false, items: [], error: '' });
+    expect(notified).not.toHaveBeenCalled();
+    current.resolve({ ok: true, items: [{ id: 'new' }] });
+    await replacement;
+    expect(latest).toMatchObject({ loading: false, loaded: true, items: [{ id: 'new' }] });
+  });
+});
+
+describe('区块读取世代号：drain 与 reload 双飞乱序，旧响应作废', () => {
   it('旧响应后到不覆盖新数据（已删资产不复活显示）', async () => {
     const firstTrip = deferred();
     let assetsListCalls = 0;
@@ -120,7 +153,7 @@ describe('P-r2-20 › 区块读取世代号：drain 与 reload 双飞乱序，�
   });
 });
 
-describe('P-r2-40 › 经验迁移状态读取：保留现值+在途守卫', () => {
+describe('经验迁移状态读取：保留现值+在途守卫', () => {
   function migrationState() {
     return {
       preview: { items: [{ id: 'pv-1' }] },
@@ -195,7 +228,7 @@ describe('P-r2-40 › 经验迁移状态读取：保留现值+在途守卫', () 
     expect(store.experienceMigration.lastRun.migrationId).toBe('mig-run-final');
   });
 
-  it('迁移预览（E7）读取同样保留 running 瞬态，不整体替换（同 P-r2-40 口径）', async () => {
+  it('迁移预览读取同样保留 running 瞬态，不整体替换', async () => {
     const trip = deferred();
     const { ns, store } = loadCognitionAssets({ experienceMigration: migrationState() }, {}, {
       cogseed: { invoke: vi.fn(async () => trip.promise) },

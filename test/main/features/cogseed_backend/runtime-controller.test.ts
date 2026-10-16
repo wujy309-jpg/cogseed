@@ -112,6 +112,20 @@ function runtimeFrom(events: RuntimeEventEnvelope[]): CogSeedAgentRuntimeFacade 
 }
 
 describe('CogSeed Runtime controller', () => {
+  it('consumes the persisted Runtime terminal text after completion without making text checking a delivery prerequisite', async () => {
+    const checks = await import('../../../../src/main/features/recall/cognition-output-check');
+    const check = vi.spyOn(checks, 'checkPersistedRuntimeCognitionOutput').mockRejectedValue(new Error('source unavailable'));
+    const { createCogSeedRuntimeController } = await import('../../../../src/main/features/cogseed_backend/runtime-controller');
+    const tasks = await import('../../../../src/main/features/cogseed_backend/task-store');
+    const controller = trackController(createCogSeedRuntimeController({ runtime: runtimeFrom([
+      { type: 'result', status: 'completed', request_id: 'req-text-check', runtime_session_id: 'runtime-text-check', text: '实际终态文本。' },
+    ]), projectTaskEvent: vi.fn(async () => undefined) } as any));
+    try {
+      const started = await controller.startCogSeedTask(USER, { requestId: 'req-text-check', task: 'Explain this choice.' });
+      await eventually(() => expect(check).toHaveBeenCalledWith(USER, started.taskId, expect.any(AbortSignal)));
+      expect(await tasks.readCogSeedTask(USER, started.taskId)).toMatchObject({ status: 'completed' });
+    } finally { check.mockRestore(); }
+  });
   it('starts one planned task in place and single-flights concurrent launch attempts', async () => {
     const runtime = runtimeFrom([]);
     const tasks = await import('../../../../src/main/features/cogseed_backend/task-store');
@@ -1048,7 +1062,7 @@ describe('CogSeed Runtime controller', () => {
       { type: 'event', request_id: 'req-controller', runtime_session_id: 'mruntime-controller', status: 'started' },
       { type: 'event', request_id: 'req-controller', runtime_session_id: 'mruntime-controller', status: 'running', text: 'thinking' },
       { type: 'event', request_id: 'req-controller', runtime_session_id: 'mruntime-controller', status: 'running', metadata: { kernel_event: 'tool_call', name: 'read_file' } },
-      { type: 'event', request_id: 'req-controller', runtime_session_id: 'mruntime-controller', status: 'running', metadata: { kernel_event: 'artifact', uri: 'p3394-object:sha256:abc', digest: 'abc', name: 'report.md', media_type: 'text/markdown', secret: 'must-not-cross' } },
+      { type: 'event', request_id: 'req-controller', runtime_session_id: 'mruntime-controller', status: 'running', metadata: { kernel_event: 'artifact', uri: 'p3394-object:sha256:abc', digest: 'abc', name: 'report.md', media_type: 'text/markdown', secret: 'synthetic-secret-must-not-cross' } },
       { type: 'result', request_id: 'req-controller', runtime_session_id: 'mruntime-controller', status: 'completed', text: 'final answer' },
     ]);
     const { createCogSeedRuntimeController } = await import('../../../../src/main/features/cogseed_backend/runtime-controller');
@@ -2284,9 +2298,8 @@ describe('CogSeed Runtime controller', () => {
     const controller = createCogSeedRuntimeController({ runtime: runtimeFrom([]) });
 
     const cancelling = controller.cancelCogSeedTask(USER, seeded.taskId);
-    // 让取消先真正拿到任务文件锁并完成，再启动恢复：此前用两个固定 20ms 去赌
-    // 调度顺序，满载并发下恢复会抢先（全量套件里 recoveredCount 变成 1）。
-    // 断言不变——恢复不得复活一个已取消的任务。
+    // 先等取消拿到任务文件锁并完成，再启动恢复，避免用固定延迟猜调度顺序。
+    // 恢复不得复活一个已取消的任务。
     releaseTaskFile();
     await expect(cancelling).resolves.toMatchObject({ status: 'cancelled' });
 
@@ -2504,7 +2517,7 @@ describe('CogSeed Runtime controller', () => {
     expect(runs).toBe(2);
   });
 
-  it('injects confirmed recall assets into the runtime context when a conversation is bound (M-1 / Decision 2)', async () => {
+  it('injects confirmed recall assets into the runtime context when a conversation is bound', async () => {
     // Seed a confirmed projection for the conversation, exactly like the
     // recall prompt-injection tests do.
     const [candidates, refs, projection, storage, layout] = await Promise.all([

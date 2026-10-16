@@ -1,25 +1,5 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 探针 r2（红队-越权与状态，新一轮 r2）：purge 与迟到的版本快照追加交错，
- * 已清除的版本流死灰复燃。
- *
- * 发现（读码）：
- *  - updateAbilityAsset 的版本快照追加 appendVersion（asset-service.ts:876）在
- *    主记录 fileEditLock 段（:792-870）**之外**——锁内终态守卫通过后、追加落盘前
- *    不再复核资产状态；
- *  - purgeAbilityAsset 删版本流用 removeRecallJsonlStream（store.ts:162-175），
- *    它是**无锁裸 fs.rm**——与 appendJsonlAtomic 的 _getLineLock（storage.ts:200
- *    进程内行锁）零互斥（对照 removeJsonlRecords：同款删除走 _getLineLock 有锁）；
- *  - 交错后果：update 主记录段完成（version bump 落盘）→ purge 全程跑完（墓碑
- *    + rm 版本流）→ 迟到的 appendVersion 重建版本流并写入含完整 title/statement
- *    的快照——purge 已返回成功，「彻底清除：删除内容、版本和可识别副本」被打破；
- *  - 读侧零门：listAbilityAssetVersions（asset-service.ts:1800-1802）直接读流，
- *    复活的快照对版本链 UI 可见。
- *
- * 用例 1 以确定性终态证明「交错一旦发生无任何防线」（追加无拒绝+读得回）；
- * 用例 2 以真并发（主记录落盘后立即 purge）证明交错真实可发生。
- * 风格对齐 probe-r1-purge-tombstone-residue.test.ts（同域探针）。
- */
+/** 彻底清除与迟到版本追加之间的并发互斥，防止清除后的正文流重建。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -90,7 +70,7 @@ async function waitVersion(id: string, want: string, ms = 2_000): Promise<boolea
   return false;
 }
 
-describe('probe r2 › purge 与迟到版本快照交错复活', () => {
+describe('purge 与迟到版本快照交错复活', () => {
   it('确定性终态：purge 成功后追加版本快照零拒绝、读侧零门读得回正文', async () => {
     const { deleteAbilityAsset, purgeAbilityAsset, listAbilityAssetVersions } =
       await import('../../src/main/features/recall/asset-service');
@@ -125,11 +105,8 @@ describe('probe r2 › purge 与迟到版本快照交错复活', () => {
       .toContain(MARKER);
   });
 
-  // 停用注记（2026-09-30 补齐收尾）：真并发采样命中依赖 append/purge 的调度
-  // 时序——purge 链路（软删+墓碑+级联清账+rm）比 appendVersion 的落盘链长一个
-  // 量级，append 几乎总先落地，15 轮 0 命中是常态而非「窗口不存在」。确定性
-  // 用例 1 已锁住同一漏洞的终态证据；本用例保留作窗口论证参考，不作套件门禁。
-  // removeRecallJsonlStream 补锁/补 invalidateLineCount 后与用例 1 一并反转。
+  // 并发采样依赖 append/purge 调度顺序，不能用未命中证明窗口不存在。
+  // 保留跳过，恢复时应改用可控调度验证互斥，而非依赖概率采样。
   it.skip('真并发：主记录 bump 落盘后 purge 插队，迟到的 appendVersion 复活版本流', async () => {
     const assets = await import('../../src/main/features/recall/asset-service');
 

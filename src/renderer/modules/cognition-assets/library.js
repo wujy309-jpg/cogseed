@@ -41,10 +41,9 @@
       if (state.scope && state.scope !== 'restricted' && !(Array.isArray(a.scopePolicy?.workspaceIds) ? a.scopePolicy.workspaceIds : []).includes(state.scope)) return false;
       return !query || [a.title, a.statement, a.scope, scopeNames(a)].join(' ').toLocaleLowerCase().includes(query);
     });
-    // 按使用次数排序时先对 rows 预计算一次计数：uses() 每次调用都会全量遍历
-    // 时间线证明（taskExposureProofs 扫 S.proofs），放在比较器里就是
-    // N·logN 次全量扫描——资产/证明规模大时单次渲染数百万次冗余迭代。
-    const usesByAsset = state.sort === 'used' ? new Map(rows.map(a => [String(a.id), uses(a)])) : null;
+    // Aggregate the timeline once, rather than scanning every proof for every
+    // asset. Counts still use the shared real-usage and exposure-dedup formula.
+    const usesByAsset = state.sort === 'used' ? NS.ui.broughtInCountsFor() : null;
     return rows.sort((a, b) => (state.sort === 'name' ? String(a.title || '').localeCompare(String(b.title || ''), undefined, { numeric: true })
       : state.sort === 'used' ? (usesByAsset.get(String(b.id)) || 0) - (usesByAsset.get(String(a.id)) || 0)
         : String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))

@@ -2,20 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as os from 'node:os';
 import { trustedIpcSender } from '../../helpers/trusted-ipc-sender';
 
-/**
- * recall.assets.approval.* 两通道 IPC 薄层契约测试（P-r3-33 补断层；对照
- * po-channels.test.ts 的同款契约模式）。
- *
- * 覆盖 src/main/ipc/index.ts 的 approval.read / approval.decide 两通道。
- * IPC 只做入参校验转调 features（Constitution II）：
- * ① 通道已注册（不是 unknown channel）；
- * ② payload 塞 uid 不改变转调入参（用户身份只来自 ctx.userId）；
- * ③ 三道校验拒绝非法入参（bad proposalId / 枚举外 decision / 非法 payload）；
- * ④ 合法参数按形状透传（decide 的 payload 选项：undefined 不传键）且回执
- *    键集不增删——尤其服务层 ok:false（versionConflict / 已处置）必须原样
- *    到达渲染层，不得被 IPC 薄层的成功外衣伪装成 ok:true（通道回执 ok 由
- *    decideAssetChangeProposal 自带，IPC 层不硬编码）。
- */
+/** 资产审批 IPC 薄层：验证通道与参数，用户身份只来自宿主上下文，
+ * 合法输入按原形状传给 feature，服务层失败和版本冲突回执不得包装成成功。 */
 
 type InvokeFn = (event: unknown, req: { channel: string; payload?: unknown }) => Promise<any>;
 let invokeHandler: InvokeFn | null = null;
@@ -158,7 +146,7 @@ describe('ipc › recall.assets.approval.* 两通道（薄层契约）', () => {
     expect(decided.state).toBe('rejected');
     expect(Object.keys(decided).sort()).toEqual(['message', 'ok', 'state']);
 
-    // 版本冲突回执（P-r1-74 冲突即作废重提：渲染层靠 versionConflict 键落终态作废）。
+    // 版本冲突即作废重提：渲染层靠 versionConflict 键落终态作废。
     approvalFeature.decideAssetChangeProposal.mockClear();
     approvalFeature.decideAssetChangeProposal.mockResolvedValue({
       ok: false, state: 'pending', versionConflict: { baselineVersion: 'v2', currentVersion: 'v3' },

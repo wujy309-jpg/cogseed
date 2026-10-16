@@ -11,7 +11,7 @@ describe('活动存量的可恢复收敛', () => {
   });
   it('剔除明确的临时要求、虚构身份和执行计数，保留长期技术方法', () => {
     for (const text of ['属于一次性测试信号，不入长期偏好', '纯虚构验收身份，不是用户事实', 'personal_fields_check 的返回里 total 可能大于数组总和']) expect(nonRetainableActivityContent(text)).toBeDefined();
-    for (const text of ['以后验收报告采用结论、证据、待办三段式。', '我长期负责测试，技术解释请先讲含义。', '项目甲固定负责人为李四。']) expect(nonRetainableActivityContent(text)).toBeUndefined();
+    for (const text of ['以后验收报告采用结论、证据、待办三段式。', '我长期负责测试，技术解释请先讲含义。', '项目甲固定负责人为示例负责人乙。']) expect(nonRetainableActivityContent(text)).toBeUndefined();
   });
   it('只派生排除理由，不改变状态和原文；用户主动保存和修订保留', () => {
     const old = candidate({ judgment: '纯虚构验收身份，不是用户事实' });

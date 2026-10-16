@@ -1,29 +1,6 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 探针（状态机审计员 · 本轮，sm6）：purge 墓碑漏清「验证三件套」
- * （validationCount / consecutiveFailures / lastValidatedAt）——P-r1-4（前遍，
- * tags/scope/causalRule/learningProvenance 四字段漏清）之外的同性质新成员。
- *
- * 读码链：
- *  - recordAbilityAssetValidation（asset-service.ts:1970-1971）给活资产写
- *    validationCount/consecutiveFailures/lastValidatedAt（带验证历史的资产常见）；
- *  - purgeAbilityAsset 的 mutate 清单（:1352-1377 共 17 字段）不含三件套；
- *    对照 :1374-1376 清 maturity 的理由「成熟度是对已清除内容的效果声明，
- *    墓碑不该继续声称这条已验证」——validationCount>0 + lastValidatedAt 正是
- *    「已验证 N 次、最近验证于 X」的效果声明，同性质却漏清；
- *  - purged 终态拒一切写入（setStatus :1038 assertNotPurged）→ 残留永不可清除
- *    （与 P-r1-4 的「永不可清除」同款）。
- *
- * 手法：纯顺序链路——建资产 → 记一次成功验证 → delete → purge → 断言墓碑
- * 仍带 validationCount=1 与 lastValidatedAt。对照组断言 maturity 确实被清
- * （既有 17 字段清单生效，缺口恰只有三件套族）。
- *
- * 回归 sm6（收尾改名自 probe-sm6-purge-validation-residue.test.ts · 2026-10-01 记账员）：
- * F-r4-7 已修——purge mutate 清单补清验证三件套（validationCount/consecutiveFailures/
- * lastValidatedAt）。主用例由记账员按修复后口径翻转断言（基线 1 failed 消除）；
- * 修复员正式回归在 test/main/features/recall/asset-lifecycle-redteam.test.ts
- * （maturity 用例扩展覆盖三件套）。
- */
+/** purge 墓碑清除 validationCount、consecutiveFailures、lastValidatedAt
+ * 及 maturity，不能继续替已清除内容声称已验证。终态写入拒绝保持不变。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -56,7 +33,7 @@ afterEach(() => {
 
 const ACT = { actor: 'user' as const, reason: 'probe' };
 
-describe('回归 sm6 › purge 墓碑清验证三件套（F-r4-7 已修）', () => {
+describe('purge 墓碑清验证三件套', () => {
   it('回归：带验证历史的资产 purge 后墓碑不再带 validationCount/lastValidatedAt（效果声明清空）', async () => {
     const assets = await import('../../src/main/features/recall/asset-service');
     const now = new Date().toISOString();
@@ -81,7 +58,7 @@ describe('回归 sm6 › purge 墓碑清验证三件套（F-r4-7 已修）', () 
     expect(tomb.status).toBe('purged');
     expect(tomb.title).toBe(''); // 对照：正文确已清
     expect(tomb.maturity).toBeUndefined(); // 对照：maturity 效果声明确已清
-    // F-r4-7 修复后：验证三件套与 maturity 同被清——墓碑不替已清除内容背书。
+    // 验证三件套与 maturity 同被清，墓碑不替已清除内容背书。
     expect(tomb.validationCount).toBeUndefined();
     expect(tomb.consecutiveFailures).toBeUndefined();
     expect(tomb.lastValidatedAt).toBeUndefined();

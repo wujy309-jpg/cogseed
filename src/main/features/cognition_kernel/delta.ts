@@ -1,15 +1,14 @@
 /**
- * cognition_kernel/delta — 变更集（S1 契约层）。
+ * cognition_kernel/delta — 变更集契约。
  *
  * 口径：**任何改动都表现为一个 Delta**；区别只在"是否自动确认"——
  *   用户手改 = 自动确认的 Delta（保留直接生效体验）
  *   系统提议 = status:'proposed'，等用户点头（收件箱里的那一条）
  *
- * 形状沿用史雨萱《02-跨模块契约规范》的 OntologyDelta（deltaId/op/before/after/
- * source/evidenceRefs/version/rollbackOf），本模块补三样：来源分类 origin、
- * 幂等键 idempotencyKey、状态机 status。
+ * 变更记录包含目标、前后正文、来源证据、版本与回滚指针，并用来源分类、
+ * 幂等键和状态区分提议、提交及重复写入。
  *
- * 纯函数、无 I/O：本文件不落盘、不改任何存储；落地器在 S3 实现。
+ * 纯函数、无 I/O：本文件不落盘、不改任何存储；提交由 store.ts 负责。
  */
 
 import { createHash } from 'node:crypto';

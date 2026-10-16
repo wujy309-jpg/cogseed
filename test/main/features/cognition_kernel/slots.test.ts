@@ -1,4 +1,5 @@
-/** Read-only task slot resolution, three-axis checked receipts, and legacy filled receipt compatibility. */
+/** Read-only task slot resolution, three-axis checked receipts, and legacy filled receipt compatibility.
+ * All identities, projects and facts below are synthetic fixtures. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
@@ -73,7 +74,7 @@ describe('resolveOntologySlots（本体轴只读解析）', () => {
   it('规则槽位找不到规则不算缺（没有规则不是缺口）', async () => {
     await seedOntology();
     const { resolveOntologySlots } = await import('../../../../src/main/features/cognition_kernel');
-    const result = await resolveOntologySlots(userId, [{ slot: '报销-规则', kind: 'rule', ruleKeyword: '报销' }], { context: projectContext });
+    const result = await resolveOntologySlots(userId, [{ slot: '合成任务-规则', kind: 'rule', ruleKeyword: '合成任务' }], { context: projectContext });
     expect(result.bound).toEqual([]);
     expect(result.missing).toEqual([]);
   });
@@ -97,7 +98,7 @@ describe('resolveAssetSlots（方法资产轴只读解析）', () => {
   });
 });
 
-describe('checkTaskFields 三轴体检与回执（P1）', () => {
+describe('checkTaskFields 三轴体检与回执', () => {
   it('三轴合并：本体轴缺口进 gaps，资产缺失不进 gaps；回执覆盖三轴；filled 事件闭环可读', async () => {
     await seedOntology();
     const { writeRecallJsonRecord } = await import('../../../../src/main/features/recall/store');
@@ -135,8 +136,8 @@ describe('checkTaskFields 三轴体检与回执（P1）', () => {
 
   it('P0 历史 axis=personal 回执在新读侧继续可读', async () => {
     const { recordCognitionBoundReceipt, listCognitionBoundReceipts, checkTaskFields } = await import('../../../../src/main/features/cognition_kernel');
-    const check = await checkTaskFields(userId, { id: 'expense', title: '报销', fields: [{ fieldName: '姓名' }] });
-    await recordCognitionBoundReceipt(userId, 'turn-p0', 'expense', check);
+    const check = await checkTaskFields(userId, { id: 'synthetic_task', title: '合成任务', fields: [{ fieldName: '姓名' }] });
+    await recordCognitionBoundReceipt(userId, 'turn-p0', 'synthetic_task', check);
     const listed = await listCognitionBoundReceipts(userId, 'turn-p0');
     expect(listed[0].missing.map(ref => ref.axis)).toEqual(['personal']);
     expect(listed[0].bound).toEqual([]);

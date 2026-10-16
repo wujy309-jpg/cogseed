@@ -8,7 +8,11 @@ import { captureSummaryModelResponse } from '../../../helpers/capture-summary-mo
 import { drainMainRuntimeForTest } from '../../../helpers/drain-main-runtime';
 const mocks = vi.hoisted(() => ({ summary: vi.fn(), value: vi.fn(), extract: vi.fn(), grounding: vi.fn(), uncertainty: vi.fn(), buildRunner: vi.fn(),
   getMessages: vi.fn(), getMessagesPage: vi.fn(), getConversation: vi.fn(), listConversations: vi.fn() }));
-vi.mock('../../../../src/main/features/auth', () => ({ hasConfiguredModel: () => ({ configured: true }), getConfiguredModelOAuthExpiredMessage: () => null }));
+vi.mock('../../../../src/main/features/auth', () => ({
+  listEntriesForUser: async () => ({ entries: [{ provider: 'synthetic-configured-provider', model: 'synthetic-configured-model' }] }),
+  hasConfiguredModelForUser: () => ({ configured: true }),
+  getConfiguredModelOAuthExpiredMessageForUser: () => null,
+ hasConfiguredModel: () => ({ configured: true }), getConfiguredModelOAuthExpiredMessage: () => null }));
 vi.mock('../../../../src/main/features/chats', () => ({ getMessages: mocks.getMessages, getMessagesPage: mocks.getMessagesPage,
   getConversation: mocks.getConversation, listConversations: mocks.listConversations }));
 vi.mock('../../../../src/main/model/core-agent/runner', () => ({ buildRunner: mocks.buildRunner }));
@@ -94,8 +98,8 @@ it('regenerates an unowned top-level ontology plan once from the identical sourc
     expect(mocks.extract).toHaveBeenCalledTimes(2);
     const [first, repair] = extractionOptions();
     expect(first.modelCandidates).toEqual(route); expect(repair.modelCandidates).toEqual(route);
-    expect(repair.systemPrompt).toContain('nested INSIDE the candidate it belongs to');
-    expect(repair.systemPrompt).toContain('rather than borrowing an unowned plan');
+    expect(repair.systemPrompt).toContain('Each group owns its complete cognition or ontology explanation and its evidence.');
+    expect(repair.systemPrompt).toContain('Never borrow an unowned top-level plan');
     expect(mocks.extract.mock.calls[1][0].message).toBe(mocks.extract.mock.calls[0][0].message);
     const input = JSON.parse(mocks.extract.mock.calls[1][0].message);
     expect(input.approvedEvidence).toEqual([expect.objectContaining({ quote: source, messageId: 'message-user' })]);

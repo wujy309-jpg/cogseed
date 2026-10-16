@@ -10,7 +10,7 @@ export async function withAssetVersionMetadata<T>(metadata: { actor: 'user' | 's
 }
 export const ASSET_VERSION_SNAPSHOT_FIELDS = ['title', 'statement', 'type', 'contentCategory', 'scope', 'scopePolicy', 'evidenceRefs',
   'learningSignal', 'learningProvenance', 'ontologyRefs', 'relations', 'derivedFrom', 'applicableWhen', 'forbiddenWhen',
-  'sourceSessionIds', 'status', 'maturity', 'version', 'definition', 'standingPreferenceAuthority'] as const;
+  'sourceSessionIds', 'status', 'maturity', 'version', 'definition', 'standingPreferenceAuthority', 'userEditDecision'] as const;
 export function assetVersionSnapshot(record: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(ASSET_VERSION_SNAPSHOT_FIELDS.filter(k => record[k] !== undefined).map(k => [k, record[k]]));
 }

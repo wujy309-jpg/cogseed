@@ -23,32 +23,27 @@
     'asset-action', 'asset-recommend-ack', 'select-asset-version', 'delete-asset-version',
     'rollback-cleanup-item', 'cleanup-uncertain-dismiss', 'cleanup-uncertain-defer',
     'run-maintenance', 'purge-deleted-asset', 'asset-edit-save', 'edit-from-version', 'merge-asset-version', 'merge-asset', 'source-action',
-    // A5（2026-09-29）：候选清单读失败的显式重试。
+    // 候选清单读失败的显式重试。
     'retry-candidates',
-    // 治理待办就地处断（specs/010 T010）：冲突选边、巡检选边/合并、补边界。
-    // 全部经 cognition.inbox.resolve（core.actions 转发，不在渲染层写）。扩权/
-    // 定级两类动作已随敏感级机制整体删除（2026-09-28）；「补条件」就地表单
-    // 已随 T028 恢复（2026-09-29，review-views.js boundaryFormRow 渲染，
-    // case 见委托层 inbox-boundary-save），不再是待清理的死码。
+    // 治理待办就地处断：冲突选边、巡检选边/合并、补边界。
+    // 全部经 cognition.inbox.resolve，由 core.actions 转发，不在渲染层写数据。
 
 
 
     'proof-rate',
-    'nightly-toggle', 'nightly-scan-now', 'auto-approval-toggle', 'nightly-model-add', 'nightly-model-remove', 'nightly-model-up', 'nightly-model-down', 'nightly-model-reset',
+    'nightly-toggle', 'nightly-scan-now', 'auto-approval-toggle', 'nightly-model-remove', 'nightly-model-up', 'nightly-model-down', 'nightly-model-reset',
 
-    // 经验目录管理（specs/016 US-803）：四个管理动作 + 迁移执行；preview/status
+    // 经验目录管理：四个管理动作 + 迁移执行；preview/status
     // 是只读扫描，不进 pending 集（与 refresh 的口径不同：它们有各自的载入态）。
     'experience-status-toggle', 'experience-set-type', 'experience-merge', 'experience-archive', 'experience-migration-run',
 
-    // 「记一条」保存（设计 7.2）：走 recall.candidates.save 产生候选。
-
-    // ranking-weights-save 已随权重卡彻底移除删除（G1 拍板项 #3，2026-09-28）。
+    // 「记一条」保存：走 recall.candidates.save 产生候选。
   ]);
 
   /* ────────────────────────── 事件委托 ────────────────────────── */
 
   function readCandidateForm(anchorEl) {
-    // 就近读取（2026-09-15 内嵌表单后一页可能有多张候选卡）：从被点的按钮
+    // 就近读取：从被点的按钮
     // 向上找最近的表单卡；无锚点时退回全局第一张（兼容旧调用）。
     const card = anchorEl && anchorEl.closest
       ? anchorEl.closest('.ca-candidate-detail') || anchorEl.closest('.ca-activity-detail')?.querySelector('.ca-candidate-detail')
@@ -109,8 +104,7 @@
       try {
         switch (act) {
           case 'go-back': {
-            // 「返回」= 回到上一个界面（2026-09-29 子安定稿，推翻 09-17 的
-            // "按文案回列表"口径）：页面级导航一律压栈，栈里有来路就直接
+            // 「返回」回到上一个界面：页面级导航一律压栈，栈里有来路就直接
             // router.back()——从系统活动点「看报告」进报告页，返回就回系统
             // 活动。栈空（深链进入/整页刷新丢栈）时按详情类型归位到对应主
             // 页面兜底（资产详情保留分类筛选）。
@@ -121,7 +115,7 @@
             const name = S.route.candidateId ? 'review'
               : (S.route.captureId || S.route.name === 'activity' || S.route.name === 'settings') ? 'activity'
                 : 'overview';
-            // 经验详情兜底落「我的认知」经验档（specs/017 整改一：经验页签已收编）。
+            // 经验详情兜底落「我的认知」经验档。
             const category = name === 'overview'
               ? (S.route.experienceId || String(S.route.category || '') === 'experiences' ? 'experiences' : String(S.route.category || ''))
               : '';
@@ -153,15 +147,15 @@
           }
           case 'tab': router.go({ name: id }); break;
           case 'filter-cat': router.go({ name: 'overview', category: id }); break;
-          // 目录视图切换（2026-09-18）：同一个列表页换一种行形态（模型视角），
+          // 目录视图切换：同一个列表页换一种行形态（模型视角），
           // 不新增 tab。assetView 必须进 router.go 的归一化白名单，否则被丢弃。
           case 'asset-view': router.go(id === 'tree' ? { name: 'tree' } : { name: 'overview', assetView: id === 'catalog' ? 'catalog' : '' }); break;
-          // 「管理」模式（specs/018 T031）：目录视图/批量打标/多选默认不可见，
+          // 「管理」模式：目录视图/批量打标/多选默认不可见，
           // 小切换入口收在这里——普通用户默认视图永远只见列表。
           case 'overview-manage-toggle': {
             // 退出判定看「有效管理态」（manage=1 或 catalog 深链或多选），
             // 不能只看 manage 旗标——目录深链进来时 manage='' 但身在管理态，
-            // 按 manage 判会把它误判成「进入管理」（迭代轮 1 真机抓出）。
+            // 按 manage 判会把它误判成「进入管理」。
             const inManage = String(S.route.manage || '') === '1'
               || String(S.route.assetView || '') === 'catalog';
             router.go(Object.assign({}, S.route, {
@@ -174,7 +168,7 @@
             break;
           }
           case 'activity-view': router.go({ name: 'activity', activityView: id, activityDone: id === 'done' ? '1' : '', captureBucket: '' }); break;
-          // 导语可点数字（specs/018 T010）：滚动到本页对应分区（纯呈现，
+          // 导语可点数字：滚动到本页对应分区（纯呈现，
           // 不动路由栈——这是页内锚点跳转，不是导航）。
           case 'review-jump': {
             const target = document.getElementById(id);
@@ -195,7 +189,7 @@
             break;
           }
           case 'retry-candidates': {
-            // A5（2026-09-29）：候选清单读失败后的显式重试入口。
+            // 候选清单读失败后的显式重试入口。
             await NS.reload();
             break;
           }
@@ -246,7 +240,7 @@
           case 'activity-row': { const row = (S.activityRows || []).find(item => item.key === id); if (row) router.go(Object.assign({ name: 'activity', activityView: S.route.activityView || 'attention' }, row.route)); break; }
           case 'activity-page': router.go({ name: 'activity', activityView: S.route.activityView, activityQuery: S.route.activityQuery, activityPage: id }, { replace: true }); break;
           case 'open-candidate': router.go({ name: 'activity', candidateId: id }); break;
-          // 「记一条」（设计 7.2）：手动新建候选——列表页头/空态入口，表单卡
+          // 「记一条」：手动新建候选——列表页头/空态入口，表单卡
           // 就地展开（candCreate 路由参数），保存走 recall.candidates.save。
           case 'open-ontology': await NS.openPersonalOntology({ moduleId: el.dataset.moduleId || '', recordId: el.dataset.recordId || '', recordVersion: el.dataset.recordVersion || '' }); break;
           case 'open-asset': router.go({ name: 'overview', assetId: id }); NS.library?.revealAsset(id); break;
@@ -258,16 +252,13 @@
           case 'select-asset-version': await A.selectAssetVersion(id, el.dataset.version || ''); break;
           case 'run-maintenance': await A.runMaintenance(); break;
           case 'purge-deleted-asset': {
-            // 真机修复（2026-09-26 T035 取证抓出）：此处曾裸调 confirmUser ——
-            // helper 定义在 core.js 闭包、经 NS.confirmUser 暴露，裸引用直接
-            // ReferenceError，「立即彻底删除」按钮在真机上一直点不动（测试只打
-            // core 动作层， delegation 层的裸引用漏网）。
+            // 确认 helper 定义在 core.js 闭包中，必须通过 NS.confirmUser 调用。
             const ok = await NS.confirmUser(T('cognition.deleted_purge_confirm', '彻底删除后内容与记录一并清除、不可恢复。确认删除？'), true);
             if (ok) await A.purgeDeletedAsset(id);
             break;
           }
           case 'go-inbox-asset': router.go({ name: 'overview', assetId: id }); NS.library?.revealAsset(id); break;
-          // 进入整理报告页是页面级导航，必须入栈（2026-09-29 返回跳错根因）：
+          // 进入整理报告页是页面级导航，必须入栈：
           // 此前两处带 replace:true，来源页（系统活动/资产设置）没进栈，返回
           // 时弹到更早逛过的历史页。就地状态翻转才用 replace，页面切换不用。
           case 'open-cleanup': router.go({ name: 'cleanup', cleanupReportId: '' }); break;
@@ -341,8 +332,7 @@
           }
           case 'open-kstar-episode': {
             // 再点同一 chip 或点「收起」（id 空）即收起；展开时拉详情。
-            // 就地展开不动宿主页（2026-09-17 修，子安实测抓出跳回"我的
-            // 认知"）：保持当前 name 与全部详情上下文（候选/资产/采集/
+            // 就地展开不动宿主页：保持当前 name 与全部详情上下文（候选/资产/采集/
             // 版本/经验键），只切 kstarEpisodeId——此前 name 硬编码 overview，
             // 在候选详情点复盘 chip 会整页跳走。
             const prev = String(S.route.kstarEpisodeId || '');
@@ -362,7 +352,7 @@
             break;
           }
           case 'merge-asset': await A.mergeAssets(id, el.dataset.target || ''); break;
-          /* ── 经验目录（specs/016 US-801/803）──────────────────────────── */
+          /* ── 经验目录──────────────────────────── */
           case 'open-experience': router.go({ name: 'overview', category: 'experiences', experienceId: id }); break;
           case 'experience-status-toggle': await A.experienceStatusToggle(id, el.dataset.action || 'pause'); break;
           case 'experience-set-type': await A.experienceSetType(id, el.dataset.type || ''); break;
@@ -370,7 +360,7 @@
           case 'experience-archive': await A.experienceArchive(id); break;
           case 'experience-migration-preview': await A.experienceMigrationPreview(); break;
           case 'experience-migration-run': {
-            // run 必须显式带 assetIds（E7 契约，禁止隐式批量）：单条走
+            // run 必须显式带 assetIds，禁止隐式批量：单条走
             // data-asset、批量走 data-assets（逗号分隔，来自可见的预览清单）。
             const ids = String(el.dataset.assets || el.dataset.asset || '')
               .split(',').map((value) => value.trim()).filter(Boolean);
@@ -384,12 +374,12 @@
           case 'storage-rollback': await A.cognitionStorageUpgrade('rollback'); break;
           case 'source-action': await A.sourceAction(el.dataset.kind || '', id, el.dataset.action); break;
           case 'proof-toggle':
-            // 使用记录已并入资产详情（2026-09-15）：事件展开/收起保持在
+            // 使用记录已并入资产详情：事件展开/收起保持在
             // 当前资产详情页内切换。
             router.go({
               name: 'overview',
               assetId: String(S.route.assetId || ''),
-              // 带全上下文（2026-09-17 审查补）：使用记录与版本区同页，丢了
+              // 带全上下文：使用记录与版本区同页，丢了
               // assetVersionId/kstarEpisodeId 会把就地展开的版本/复盘收起。
               assetVersionId: String(S.route.assetVersionId || ''),
               assetVersionDiff: String(S.route.assetVersionDiff || ''),
@@ -451,7 +441,6 @@
       });
     });
     root.addEventListener('change', (event) => {
-      NS.assetSettings?.modelInput?.(event, root);
       const categoryField = event.target.closest?.('.ca-asset-edit select[data-f="contentCategory"]');
       const categoryAssetId = categoryField?.closest('.ca-asset-edit')?.dataset.assetEditId;
       if (categoryAssetId) {
@@ -497,8 +486,7 @@
       const sub = spot.dataset.sub || '';
       tip.textContent = spot.dataset.title + (sub ? ` — ${sub}` : '');
       tip.classList.add('show');
-      /* 坐标相对树画布（.tip 是 absolute，且 .ca-scroll 有 contain:paint，
-         fixed 的视口坐标在这里整体漂移——2026-09-21 真机抓出）。 */
+    /* 坐标相对树画布；.ca-scroll 有 contain:paint，不能使用 fixed 视口坐标。 */
       const stage = tip.closest('.tree-stage');
       if (!stage) return;
       const stageRect = stage.getBoundingClientRect();
@@ -531,7 +519,7 @@
       event.preventDefault();
       el.click();
     });
-    // tab 行方向键漫游（2026-09-21 原型 v7 a11y 契约）：←/→ 移动焦点，
+    // tab 行方向键漫游：←/→ 移动焦点，
     // Home/End 跳首尾；tab 是 div[role=button]，无原生方向键语义。
     // 挂 root 委托——bindEvents 先于持久壳首次构建执行，挂 .ca-tabs 会落空。
     root.addEventListener('keydown', (event) => {
@@ -551,7 +539,7 @@
 
   /* ────────────────────────── 生命周期 ────────────────────────── */
 
-  // 整理进度的 4s 轮询已删（2026-09-27 刷新机制重写）：captures 写入经
+  // 整理进度的 4s 轮询已删：captures 写入经
   // recall store 广播 cognition:changed，订阅中枢直接重拉 captures 区块，
   // 状态推进实时到达，不再定时问。
 
@@ -567,12 +555,13 @@
     if (!root) return;
     booted = true;
     bindEvents(root);
-    // 焦点保持（2026-09-21 原型 v7 a11y 契约）：内容区整体重绘后键盘焦点会
+    // 焦点保持：内容区整体重绘后键盘焦点会
     // 静默落到 body，键盘用户得重新 Tab 整页。渲染前记录焦点控件的定位特征
     // （DOM id/data-key/data-act/data-go-asset），渲染后按特征找回同一控件；找不到时
     // 回落到当前页第一个可聚焦控件——焦点永不落 body。
     NS.onChange(() => {
       const active = document.activeElement;
+      const hadActivityDrawer = !!root.querySelector('.ca-activity-detail.is-drawer-open');
       const inScroll = active && active.closest && active.closest('#ca-scroll');
       const signature = inScroll ? {
         domId: active.id || '',
@@ -583,25 +572,41 @@
       } : null;
       NS.render();
       const scroll = document.getElementById('ca-scroll');
-      if (!scroll || !signature) return;
+      if (!scroll) return;
+      const drawer = scroll.querySelector('.ca-activity-detail.is-drawer-open');
+      const scope = drawer || scroll;
+      const focusable = el => !!el && !el.disabled && el.getAttribute('aria-disabled') !== 'true'
+        && !el.closest('[hidden], [inert]') && el.getClientRects().length > 0;
+      const first = selector => Array.from(scope.querySelectorAll(selector)).find(focusable);
+      // A native focused button may blur as soon as a decision disables it,
+      // before this render captures its signature. Keep modal focus legal
+      // across that await and after the saved action disappears from the DOM.
+      if (!signature) {
+        if (!panelVisible() || (!drawer && !hadActivityDrawer)) return;
+        if (drawer?.contains(document.activeElement)) return;
+        const fallback = drawer ? first('[data-act="activity-close"], button:not(:disabled)')
+          : first('[data-act="activity-select"][aria-pressed="true"]') || first('[data-act="activity-select"]') || first('button, [role="button"]');
+        fallback?.focus({ preventScroll: true });
+        return;
+      }
       let next = null;
-      if (signature.domId) next = scroll.querySelector(`#${CSS.escape(signature.domId)}`);
+      if (signature.domId) next = scope.querySelector(`#${CSS.escape(signature.domId)}`);
       if (!next && signature.dataKey) {
-        const group = scroll.querySelector(`[data-key="${CSS.escape(signature.dataKey)}"]`);
+        const group = scope.querySelector(`[data-key="${CSS.escape(signature.dataKey)}"]`);
         if (group) next = group.querySelector('button');
       }
-      if (!next && signature.goAsset) next = scroll.querySelector(`[data-go-asset="${CSS.escape(signature.goAsset)}"]`);
+      if (!next && signature.goAsset) next = scope.querySelector(`[data-go-asset="${CSS.escape(signature.goAsset)}"]`);
       if (!next && signature.act) {
-        const candidates = Array.from(scroll.querySelectorAll(`[data-act="${CSS.escape(signature.act)}"]`));
+        const candidates = Array.from(scope.querySelectorAll(`[data-act="${CSS.escape(signature.act)}"]`)).filter(focusable);
         next = candidates.find((el) => !signature.id || (el.dataset && el.dataset.id === signature.id)) || candidates[0];
       }
-      if (!next) next = scroll.querySelector('button, [role="button"]');
+      if (!focusable(next)) next = drawer ? first('[data-act="activity-close"], button:not(:disabled)')
+        : hadActivityDrawer ? first('[data-act="activity-select"][aria-pressed="true"]') || first('[data-act="activity-select"]') || first('button, [role="button"]')
+          : first('button, [role="button"]');
       if (next && typeof next.focus === 'function') next.focus({ preventScroll: true });
     });
-    // tab 自适应：3 个中文 tab 在窄窗口仍可能折行。检测用 Range 取
-    // 主标题的**文本行**数（flex 子元素被 blockify，元素级 getClientRects
-    // 恒为 1，测不出折行；Range 量的是文本自身），>1 即切紧凑模式
-    // （CSS 隐藏副标题腾出宽度）。
+    // 窄窗口按标题文本的行数切换紧凑 padding。使用 Range 测量文字，
+    // 避免 flex 子元素的 getClientRects 只能反映块级边界。
     const fitTabs = () => {
       const tabs = document.querySelector('#ca-root .ca-tabs');
       if (!tabs) return;
@@ -630,7 +635,7 @@
     });
     window.addEventListener('resize', () => requestAnimationFrame(fitTabs));
     NS.render();
-    // 订阅主进程认知变更广播（唯一刷新入口，2026-09-27 重写）：可见性判定
+    // 订阅主进程认知变更广播（唯一刷新入口，重写）：可见性判定
     // 由 MutationObserver 注入，后台窗口零 IPC，回前台 flush 挂起区块。
     NS.setupChangeRail(panelVisible);
     await NS.loadRoute();
@@ -658,6 +663,7 @@
   // 不额外加载目录，候选卡只有在确实展示这些权限边界时才读一次。
   let scopeOptionsRouteKey = '';
   NS.onChange(() => {
+    if (!panelVisible()) return;
     const activeAssetId = S.route.name === 'overview' && S.route.assetEdit === '1'
       ? String(S.route.assetId || '') : '';
     const candidateRoute = S.route.name === 'activity';
@@ -675,6 +681,7 @@
   });
 
   NS.onChange(() => {
+    if (!panelVisible()) return;
     if (S.route.name === 'activity' && !S.route.captureId) {
       const id = S.route.candidateId || (S.activityRows || [])[0]?.route?.candidateId;
       if (id) void NS.loadReviewEvidence('candidate', id);
@@ -684,6 +691,7 @@
   // 详情页兜底加载上下文：返回栈回退/深链进入时没有经过 open-capture-detail
   // 分流，这里按当前路由补拉（loadCaptureContext 内部有缓存判重）。
   NS.onChange(() => {
+    if (!panelVisible()) return;
     if (S.route.name === 'settings') void NS.assetSettings.loadModels();
     const captureId = String(S.route.captureId || '');
     const experienceRouteId = String(S.route.experienceId || '');
@@ -697,26 +705,25 @@
       void NS.loadAssetVersions(assetId);
     }
     // 整理报告：进整理相关页签就补拉一次（内部有缓存判重）。沉淀设置页的
-    // 大扫除 section（specs/017 整改三）也要最近报告摘要，一并补拉。
+    // 大扫除 section也要最近报告摘要，一并补拉。
     // 「已删除」页签：保留期剩余天数由服务端现算，进这个页签时补拉一次。
     if (String(S.route.category || '') === 'deleted') void NS.loadDeletedAssets();
     if (['cleanup', 'settings', 'activity'].includes(String(S.route.name || ''))) {
       void NS.loadCleanupReports();
     }
-    // 自动维护合并卡（2026-09-29）：settings 页内嵌「最近检查」行，巡检数据
+    // 自动维护合并卡：settings 页内嵌「最近检查」行，巡检数据
     // 门控补 'settings'——直接落资产设置时不再漏拉（此前开关恒显假「关」）。
     if (['cleanup', 'settings', 'activity'].includes(String(S.route.name || ''))) {
       void NS.loadInspection();
     }
-    // 会话标题同理（2026-09-25 US-603）：证据来源与使用记录里的 cid 要翻成
+    // 会话标题同理：证据来源与使用记录里的 cid 要翻成
     // 会话名，五处展示同名；来源目录 100 条窗口外的会话靠这个批量口补齐。
     if (assetId) void NS.loadConversationTitles(assetId);
     if (String(S.route.name || '') === 'overview' && !experienceRouteId) {
       if (!S.assetScopeOptions || S.assetScopeOptions.status === 'idle') void A.loadAssetScopeOptions();
       if (S.libraryView?.status === 'deleted' || S.libraryView?.status === 'all') void NS.loadDeletedAssets();
     }
-    // 候选详情的 kse 证据 chip 也要真实目标摘要（此前只覆盖资产详情，
-    // 候选页 chip 一直显示兜底"一次任务"，2026-09-17 子安实测抓出）。
+    // 候选详情的 kse 证据 chip 也读取真实目标摘要，不能只覆盖资产详情。
     const candidateId = String(S.route.candidateId || '');
     if (candidateId) {
       const cand = S.candidates.find((c) => String(c.id) === candidateId);
@@ -750,17 +757,16 @@
   }
   NS.onChange(() => { requestAnimationFrame(syncRefreshIndicator); });
 
-  /* ────────────────── 排序依据装载器（specs/012 T020） ──────────────────
-   * 状态挂在模块闭包 + NS 命名空间（NS.rankingWhy）：core.js 的 store 不动
-   * （本轮白名单只开 views/app），视图按 NS 读——与 NS.api / NS.reportBlocked
-   * 的既有跨层发布同一模式。权重配置装载器（NS.rankingWeights）已随权重卡
-   * 彻底移除删除（G1 拍板项 #3，2026-09-28）。 */
+  /* 排序依据装载器：视图通过 NS.rankingWhy 读取结果，与 NS.api 的跨层发布方式一致。 */
 
   /** 该资产最近一次真实使用的回合 id：使用记录时间线（refs.taskRunId）优先，
    *  采用回执兜底；都没有 = ''（视图按「这一轮没有进入目录」如实呈现）。 */
   function latestTurnForAsset(assetId) {
     const id = String(assetId || '');
-    const fromProofs = (Array.isArray(S.proofs) ? S.proofs : [])
+    const detail = S.assetTimeline;
+    const proofs = detail?.assetId === id && !detail.loading && !detail.failed && Array.isArray(detail.items)
+      ? detail.items : S.proofs;
+    const fromProofs = (Array.isArray(proofs) ? proofs : [])
       .filter((p) => String(((p && p.refs) || {}).assetId || '') === id && String(((p && p.refs) || {}).taskRunId || ''))
       .sort((a, b) => String(b.occurredAt || '').localeCompare(String(a.occurredAt || '')));
     if (fromProofs.length) return String(fromProofs[0].refs.taskRunId || '');
@@ -773,13 +779,13 @@
   let rankingWhyLast = { assetId: '', turnId: null };
   /** 详情「为什么这一轮排在前面」：先定位回合，再查该回合该资产的回执拆解。
    *  同资产同回合只拉一次；换回合（新一轮使用记录落进时间线）会自动重拉。 */
-  async function loadRankingWhy(assetId) {
+  async function loadRankingWhy(assetId, force) {
     const id = String(assetId || '');
     if (!id) return;
     const turnId = latestTurnForAsset(id);
-    if (rankingWhyLast.assetId === id && rankingWhyLast.turnId === turnId) return;
+    if (!force && NS.rankingWhy && rankingWhyLast.assetId === id && rankingWhyLast.turnId === turnId) return;
     rankingWhyLast = { assetId: id, turnId };
-    NS.rankingWhy = { assetId: id, loading: true };
+    const state = NS.rankingWhy = { assetId: id, loading: true };
     NS.render();
     let next;
     try {
@@ -794,9 +800,9 @@
     }
     // 回执到达前用户已切走/换资产/换回合：这帧作废（不把 A 资产的拆解画给
     // B 资产，也不把旧回合的拆解盖到新回合上——与发起判重双键对称）。
-    if (rankingWhyLast.assetId !== id || rankingWhyLast.turnId !== turnId) return;
+    if (NS.rankingWhy !== state) return;
     NS.rankingWhy = next;
-    NS.render();
+    NS.notify();
   }
 
   NS.loadRankingWhy = loadRankingWhy;

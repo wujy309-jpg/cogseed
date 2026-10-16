@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { seedConfirmedCognition, seedPendingCognition } from '../../helpers/cognition-store-fixture';
 
-// 标题闸门（设计 3.2）后晋升链对不合规 summary 走 LLM 起标题；本文件走的是
+// 标题闸门后晋升链对不合规 summary 走 LLM 起标题；本文件走的是
 // 内生写入路径（summary＝正文首句/模板拼接），单测无模型，mock 出确定性
 // 合规标题（与 asset-title-suggestion.test.ts 同一边界口径）。
 vi.mock('../../../src/main/features/recall/asset-title-suggestion', () => ({
@@ -207,6 +207,46 @@ describe('runner › buildRunner auth gate', () => {
       ,
     ]));
     // toolDefs is authoritative; AgentRunner internals may differ
+  });
+
+  it('narrows a host task to its actual relayed tool without exposing local or evolution tools', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test-placeholder';
+    const users = await import('../../../src/main/features/users');
+    users.activateUser('runner-relayed-helper');
+    const { buildRunner } = await loadRunner();
+    const relay = { name: 'edit_cognition', description: 'Isolated host relay',
+      inputSchema: { type: 'object', properties: {} }, execute: vi.fn(async () => ({ content: 'relay result' })) };
+    const built = await buildRunner({ sessionId: 'anon-relayed-helper', userId: 'runner-relayed-helper',
+      skillList: [], ephemeralSession: true, extraTools: [relay], toolAllowlist: ['edit_cognition'] });
+    expect(built.toolDefs.map(tool => tool.name)).toEqual(['edit_cognition']);
+    const runtimeTools = (built.runner as any).tools;
+    expect([...runtimeTools.keys()]).toEqual(['edit_cognition']);
+    await runtimeTools.get('edit_cognition').execute({}, { state: {} });
+    expect(relay.execute).toHaveBeenCalledTimes(1);
+    const noTools = await buildRunner({ sessionId: 'anon-relayed-none', userId: 'runner-relayed-helper',
+      skillList: [], ephemeralSession: true, extraTools: [relay], toolAllowlist: [] });
+    expect(noTools.toolDefs).toEqual([]);
+    expect((noTools.runner as any).tools.size).toBe(0);
+    const readOnly = await buildRunner({ sessionId: 'anon-relayed-readonly', userId: 'runner-relayed-helper',
+      skillList: [], ephemeralSession: true, extraTools: [relay], toolAccess: 'read-only',
+      toolAllowlist: ['edit_cognition', 'read_file'] });
+    expect(readOnly.toolDefs.map(tool => tool.name)).toEqual(['read_file']);
+  });
+
+  it('keeps provider-native search inside the host subset before touching global account state', async () => {
+    const { buildNativeSearchOnPayload } = await loadRunner();
+    const payload = { tools: [{ type: 'function', function: { name: 'edit_cognition' } }], messages: [] };
+    const denied = buildNativeSearchOnPayload('openai', 'test-model', undefined, ['edit_cognition']);
+    expect(denied(payload, { api: 'openai-responses' })).toBe(payload);
+    expect(buildNativeSearchOnPayload('openai', 'test-model', undefined, [])(payload, { api: 'openai-responses' })).toBe(payload);
+    // Unsupported APIs must not ask for a global active profile either.
+    expect(buildNativeSearchOnPayload('zai', 'glm-5.2')(payload, { api: 'openai-completions' })).toBe(payload);
+    const users = await import('../../../src/main/features/users');
+    users.activateUser('runner-native-search');
+    const permitted = buildNativeSearchOnPayload('openai', 'test-model', undefined, ['web_search']);
+    expect(permitted(payload, { api: 'openai-responses' })).toEqual({ ...payload,
+      tools: [...payload.tools, { type: 'web_search' }] });
+    expect(payload.tools).toHaveLength(1);
   });
 
   it('throws the "no model configured" error when auth-profiles.json has empty entries', async () => {

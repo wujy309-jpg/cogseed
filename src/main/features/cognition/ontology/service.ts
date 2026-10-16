@@ -1,13 +1,14 @@
 /** 本体提交与读取复用认知主档、transition → document锁和坏档拒写。 */
 import { randomUUID } from 'node:crypto';
 import { withCognitionTransition } from '../../cognition_bridge';
-import { cognitionStorePath, applyCognitionDeltas, loadCognitionStoreSync } from '../../cognition_kernel/store';
+import { cognitionStorePath, applyCognitionDeltas, loadCognitionStoreSync, assertCognitionCommitActive } from '../../cognition_kernel/store';
 import { corruptRecordFor } from '../../../util/corrupt-guard';
 import { notifyCognitionWrite } from '../../recall/store-events';
 import { applyOntologyCommand, validateOntologyCommand, type OntologyCommandOutcome, type OntologyCommandSourceOverride } from './commands';
 import { emptyOntologyDocument, OntologyError, validateOntologyDocument, type OntologyDocument, type OntologyRecord } from './model';
 import { ontologyScopeViolations } from './cognition-scope';
 import type { RecallAbilityAssetScopePolicy } from '../../recall/scope-policy';
+import type { CognitionEditDecision } from '../edit-decision';
 
 export function readOntologyDocument(userId: string): OntologyDocument {
   const empty = emptyOntologyDocument(userId);
@@ -26,7 +27,7 @@ export async function readOntologyView(userId: string): Promise<OntologyDocument
 export function previewOntologyCommand(userId: string, input: unknown): OntologyCommandOutcome {
   return applyOntologyCommand(readOntologyDocument(userId), input, new Date().toISOString());
 }
-export async function commitOntologyCommand(userId: string, input: unknown, sourceOverride?: OntologyCommandSourceOverride): Promise<Omit<OntologyCommandOutcome, 'document'>> {
+export async function commitOntologyCommand(userId: string, input: unknown, sourceOverride?: OntologyCommandSourceOverride, userEditDecision?: CognitionEditDecision): Promise<Omit<OntologyCommandOutcome, 'document'>> {
   let result: OntologyCommandOutcome;
   try {
     const outcome = await withCognitionTransition(userId, () => {
@@ -60,13 +61,14 @@ export async function commitOntologyCommand(userId: string, input: unknown, sour
             throw new OntologyError('formation_blocked', 'ontology edits would exceed the linked cognition scope');
         }
       }
-      return applyCognitionDeltas(userId, { kind: 'ontology', command: input, sourceOverride });
+      return applyCognitionDeltas(userId, { kind: 'ontology', command: input, sourceOverride, userEditDecision });
     });
     if (corruptRecordFor(cognitionStorePath(userId))) throw new OntologyError('store_corrupt', 'cognition store corrupt; write refused');
     if (!outcome.ok && outcome.error === 'cognition store capacity exceeded') throw new OntologyError('capacity_exceeded', outcome.error);
     if (!outcome.ok || !outcome.ontology) throw new OntologyError('commit_failed', outcome.error || 'ontology commit failed');
     result = { document: readOntologyDocument(userId), ...outcome.ontology };
   } catch (error) {
+    assertCognitionCommitActive(userId);
     if (error instanceof OntologyError) throw error;
     if (corruptRecordFor(cognitionStorePath(userId))) throw new OntologyError('store_corrupt', 'cognition store corrupt; ontology write refused');
     throw new OntologyError('commit_failed', 'ontology commit failed');
@@ -76,7 +78,7 @@ export async function commitOntologyCommand(userId: string, input: unknown, sour
 }
 
 /**
- * 2026-10-08 U03/U07：「本体整体暂停」退役的结构迁移。旧 paused 模块的
+ * 「本体整体暂停」退役的结构迁移。旧 paused 模块的
  * 在用内容逐条置为 paused（不静默扩大可用性），模块本身恢复 active
  * （模块级暂停概念删除，可用性由条目自身状态决定）。走标准命令通道：
  * 每步入版本历史、可恢复、commandId 稳定幂等，重复执行为 no-op。

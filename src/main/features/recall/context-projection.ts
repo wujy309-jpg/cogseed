@@ -1,3 +1,4 @@
+import { ambiguousRecallAssetIds, assessSemanticApplicability, decisionSchema, type SemanticApplicabilityDecision } from './semantic-applicability';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -53,7 +54,7 @@ const RUNTIME_OMISSION_REASON: Partial<Record<AssetRuntimeBlockReason, OmittedAs
 const log = createLogger('recall.context-projection');
 let lastProjectionCreatedAtMs = 0;
 
-/** 授权来源（2026-09-18 增 model_selected）：模型自己把资产挂到本任务——
+/** 授权来源：模型自己把资产挂到本任务——
  *  与宿主自动投影（not_required）、工作区策略（workspace_policy）、用户确认
  *  （user_confirmed）并列，区别在于"谁做的决定"，界面据此标"模型自选"并
  *  允许一键撤销。 */
@@ -87,6 +88,7 @@ export function projectionKnowledgeError(code: ProjectionKnowledgeErrorCode): Er
 
 export interface OmittedAssetRef {
   assetId: string;
+  detail?: string;
   reason: 'asset_paused' | 'asset_archived' | 'asset_deleted' | 'asset_purged' | 'asset_revoked' | 'workspace_not_referenced' | 'workspace_disabled' | 'scope_mismatch' | 'source_unavailable' | 'low_relevance' | 'maturity_requires_user_selection' | 'not_applicable_context' | 'forbidden_context' | 'target_agent_not_allowed' | 'prompt_budget';
 }
 
@@ -102,6 +104,7 @@ export type RecallAssetMatchMethod = HybridMatchMethod | 'standing_preference';
 export interface RecallAssetMatch {
   assetId: string;
   matchScore: number;
+  semanticAssessment?: SemanticApplicabilityDecision;
   matchMethod: RecallAssetMatchMethod;
   /** Semantica automatic-recall provenance. */
   entryAssetId?: string;
@@ -149,10 +152,8 @@ export interface SemanticaSelectionTrace {
   };
 }
 
-/** 投影冻结的内容副本形态：资产版本快照 + **可选** `evidenceRefs`
- *  （specs/016 data-model §4 / T015 加法式）：存量迁移冻结时补写——live
- *  记录迁出后证据引用只能随副本走。历史删除冻结的旧副本可能缺该字段，
- *  读侧（prompt-injection）一律按可选处理，不假定存在。 */
+/** 投影冻结的资产版本内容副本；可选 evidenceRefs 用于保留迁出后的来源引用。
+ * 旧冻结副本可能不含该字段，读取方必须按可选字段处理。 */
 export type FrozenAssetVersionSnapshot = AbilityAssetVersionRecord['snapshot'] & { evidenceRefs?: CognitionSourceRef[] };
 
 export interface ContextProjectionRecord extends RecallJsonRecord {
@@ -170,10 +171,10 @@ export interface ContextProjectionRecord extends RecallJsonRecord {
   authorization: ProjectionAuthorization;
   assetIds: string[];
   assetVersions?: Record<string, string>;
-  /** 版本真删前冻结进投影的内容副本（2026-09-17）：已确认注入引用的版本被
+  /** 版本真删前冻结进投影的内容副本：已确认注入引用的版本被
    *  物理删除时，把该版本快照抄进这里；之后注入优先按副本供给，效果与
    *  删除前一致。仅为删除时的兜底缓存，不是投影本体的必填结构。
-   *  证据引用（specs/016 T015 加法式可选字段）：存量迁移把经验类资产迁出
+   *  可选证据引用：存量迁移把经验类资产迁出
    *  资产库时，会在冻结副本里一并写入 `evidenceRefs`——live 记录删除后，
    *  证据引用只能随副本走（否则迁移后来源不可追）。历史删除冻结的旧副本
    *  可能缺该字段，读侧一律按可选处理。 */
@@ -209,14 +210,14 @@ export interface ProjectionInput {
   taskText?: string;
   authorization?: ProjectionAuthorization;
   expiresAt?: string;
-  /** 来源会话 id（2026-09-18）：模型自选投影按会话去重（同一会话只维护一条），
+  /** 来源会话 id：模型自选投影按会话去重（同一会话只维护一条），
    *  使用记录/时间线也靠它把事件关联回会话名。 */
   conversationId?: string;
-  /** 显式资产（2026-09-19 用户主动使用）：用户点「用到当前对话」钉住的资产
+  /** 显式资产：用户点「用到当前对话」钉住的资产
    *  ——绕过语义选择（用户已经挑好了），但仍过状态硬门（必须 active）并
    *  钉住当前在用版。与 taskText 语义选互斥，显式优先。 */
   explicitAssetIds?: string[];
-  /** 接收者 Agent（2026-09-25 验收修复）：显式挂载时若已知接收者，目标 Agent
+  /** 接收者 Agent：显式挂载时若已知接收者，目标 Agent
    *  白名单与作用域判定当场生效；未知则留给每轮注入闸门（那里一定知道）。 */
   agentId?: string;
   roleId?: string;
@@ -230,6 +231,7 @@ export interface ProjectionInput {
 
 export interface ProjectionSemanticOptions {
   embedTexts?: (texts: string[]) => Promise<number[][]>;
+  assessApplicability?: (message: string) => Promise<string>;
   /** Absolute hard floor (noise gate); default DEFAULT_MIN_MATCH_SCORE. */
   minScore?: number;
   /** Relative gate: fraction of the batch's best score; default
@@ -419,6 +421,7 @@ function validateAssetMatches(value: unknown): RecallAssetMatch[] | undefined {
       ...(match.relationKind ? { relationKind: match.relationKind as AbilityAssetRelationKind } : {}),
       ...(evidencePath ? { evidencePath } : {}),
       ...(match.degraded === true ? { degraded: true } : {}),
+      ...(match.semanticAssessment ? { semanticAssessment: decisionSchema.parse(match.semanticAssessment) } : {}),
     } as RecallAssetMatch;
   });
 }
@@ -567,14 +570,14 @@ function assetMatchText(asset: RecallAbilityAssetRecord, groupTitles: Map<string
   // T-Box vocabulary: resolve each referenced ontology group to its CONCEPT
   // title so the match text carries the concept name, not an opaque id.
   // Only the asset's own refs are rendered — a shared full-group vocabulary
-  // would inflate baseline similarity for every asset of the same group (M2).
+  // would inflate baseline similarity for every asset of the same group.
   const ontology = (asset.ontologyRefs || []).map((ref) => [
     groupTitles.get(ref.groupId) || ref.groupId,
     ref.section,
     ref.field,
   ].filter(Boolean).join(' / ')).filter(Boolean).join('\n');
   // type/scope are shared dimension labels, not content: including them
-  // inflated baseline similarity for every asset of the same type (M2).
+  // inflated baseline similarity for every asset of the same type.
   return [
     asset.title,
     asset.statement,
@@ -815,9 +818,7 @@ function asProjection(value: RecallJsonRecord): ContextProjectionRecord {
  *  remain. It is deliberately low — admission is primarily governed by the
  *  Top-N slots plus a relative-significance gate (see applySemanticSelection),
  *  not by this absolute cutoff. */
-// 绝对下限（噪声门）：0.25 → 0.40（2026-08-16 实机校准）。
-// 0.25 时"智慧家居论文"任务召回了 8 条弱相关经验（0.34-0.49），无关
-// 经验淹没任务上下文；0.40 砍掉 0.34-0.38 的弱相关，保留语义明确近邻。
+// 绝对相似度下限用于排除弱相关噪声；通过后仍受 Top-N 和相对相关性门控。
 export const DEFAULT_MIN_MATCH_SCORE = 0.40;
 /** Relative gate: an asset scoring below this fraction of the batch's best
  *  semantic score is dropped even inside Top-N, so a weak pool cannot force
@@ -915,6 +916,7 @@ async function applySemanticSelection(
   purposeText = '',
   workspaceId?: string,
   projectId?: string,
+  applicabilityContext?: AssetScopeContext,
 ): Promise<SemanticSelection> {
   const minScore = Number.isFinite(options.minScore)
     ? Math.max(0, Math.min(1, Number(options.minScore)))
@@ -1013,8 +1015,38 @@ async function applySemanticSelection(
     }
   }
 
+  if (applicabilityContext) {
+    const shortlist = mergedAssetMatches.filter(match => acceptedIds.has(match.assetId))
+      .map(match => assets.find(asset => asset.id === match.assetId)!);
+    const ambiguousIds = ambiguousRecallAssetIds(shortlist, queryText);
+    const ambiguous = shortlist.filter(asset => ambiguousIds.has(asset.id));
+    if (ambiguous.length) {
+      try {
+        const decisions = await assessSemanticApplicability(userId, queryText, ambiguous, applicabilityContext, options.assessApplicability);
+        for (const decision of decisions) {
+          const match = mergedAssetMatches.find(match => match.assetId === decision.assetId)!;
+          match.semanticAssessment = decision;
+          if (decision.verdict !== 'applicable') {
+            acceptedIds.delete(decision.assetId);
+            omittedRefs.push({ assetId: decision.assetId, reason: 'not_applicable_context', detail: decision.reason });
+          }
+        }
+        // Preserve deterministic rank outside adjudicated ties; the semantic
+        // decision selects and orders only the already admitted ambiguous set.
+        const slots = mergedAssetMatches.flatMap((match, index) => ambiguousIds.has(match.assetId) ? [index] : []);
+        const ordered = slots.map(index => mergedAssetMatches[index]).sort((a, b) => (a.semanticAssessment?.rank ?? 100) - (b.semanticAssessment?.rank ?? 100));
+        slots.forEach((slot, index) => { mergedAssetMatches[slot] = ordered[index]; });
+      } catch {
+        degraded = true;
+        for (const asset of ambiguous) {
+          acceptedIds.delete(asset.id);
+          omittedRefs.push({ assetId: asset.id, reason: 'not_applicable_context', detail: 'semantic_applicability_unresolved' });
+        }
+      }
+    }
+  }
   const acceptedAssets = assets.filter((asset) => acceptedIds.has(asset.id));
-  // M5 type diversity: guarantee one highest-ranked asset per type before
+  // Type diversity: guarantee one highest-ranked asset per type before
   // filling the remaining slots. The hybrid module already gives dual-route
   // evidence priority, so this pass only applies the existing Top-N policy.
   const acceptedMatches = mergedAssetMatches.filter((match) => acceptedIds.has(match.assetId));
@@ -1075,7 +1107,7 @@ export async function buildRecallView(userId: string, input: ProjectionInput, op
       continue;
     }
     const ref = input.workspaceId ? refsByAsset.get(asset.id) : undefined;
-    // 产品设计（2026-08-17 最终版）：资产池全局共享——空间会话可引用
+    // 资产池全局共享——空间会话可引用
     // **整个资产池**（含其它空间产生的资产与全局资产）；只有资产 tab
     // 显示按空间过滤（listAbilityAssetsForSpace）。workspace-ref 只是可选
     // 收紧控制（显式停用/scope 词），不是引用前置。
@@ -1114,11 +1146,11 @@ export async function buildRecallView(userId: string, input: ProjectionInput, op
 }
 
 /** 显式挂载时「与目的地无关」的阻断原因：不依赖 taskText /
- *  接收者 Agent，attach 当场就能定论，必须立刻拦下并给出规则码（US-604 AC1）。
+ *  接收者 Agent，attach 当场就能定论，必须立刻拦下并给出规则码。
  *  依赖目的地上下文的维度（scope_mismatch / target_agent_not_allowed /
  *  not_applicable_context）在接收者未知时推迟到
  *  每轮注入闸门判定——那里知道真实 agentId 与任务文本，且被拦会留 omitted
- *  回执供界面说明，不会静默（US-604 AC4/AC5）。 */
+ *  回执供界面说明，不会静默。 */
 const ATTACH_BLOCKING_REASONS: ReadonlySet<AssetRuntimeBlockReason> = new Set([
   'status_not_active',
   'source_unavailable',
@@ -1134,7 +1166,7 @@ function explicitAttachError(
 }
 
 /** 具体规则标识：`code` 只够分类（inactive / ineligible / source_unavailable），
- *  用户要的是"到底哪条规则拦的我"（US-604 AC1、SC-004）。映射收敛在
+ *  用户要的是"到底哪条规则拦的我"。映射收敛在
  *  `formal-assets/runtime.ts::assetRuntimeBlockRule`，与每轮注入的 omitted 留痕
  *  共用同一份——两处说法才不会打架。 */
 function explicitBlockError(
@@ -1152,12 +1184,9 @@ function explicitBlockError(
   return explicitAttachError('projection_asset_ineligible', `explicit projection asset is not eligible: ${assetId}`, rule);
 }
 
-/** 显式资产视图（2026-09-19 用户主动使用）：绕过语义选择、钉住当前在用版
- *  ——用户指定即是意图，语义门不该再筛一遍。但**权限与状态门照过**
- *  （2026-09-25 验收修复 US-601 AC4 / US-604 AC1）：此前只查 active，
- *  作用域、目标 Agent、敏感级、来源撤权全都不拦，且失败只抛英文原文，
- *  界面无法说明是哪条规则。失败一律码化（`ProjectionKnowledgeErrorCode`），
- *  渲染层按码翻四语规则名，不上屏原文、不泄露正文。 */
+/** 显式资产绕过语义选择并固定当前在用版，仍须通过权限、状态、作用域、
+ * 目标 Agent、敏感级和来源可用性校验。失败返回稳定规则码，界面按码本地化，
+ * 不展示原始错误或正文。 */
 async function buildExplicitAssetView(
   userId: string,
   assetIds: string[],
@@ -1207,7 +1236,7 @@ async function buildExplicitAssetView(
 }
 
 /** preview 态投影的缺省有效期：调用方不传 expiresAt 时按此兜底，
- *  避免未 confirm 的预览投影无过期时间永久滞留（2026-10-15 审计发现）。 */
+ *  避免未 confirm 的预览投影无过期时间永久滞留。 */
 const PREVIEW_PROJECTION_DEFAULT_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000;
 
 export async function previewContextProjection(userId: string, input: ProjectionInput, options: ProjectionSemanticOptions = {}): Promise<ContextProjectionRecord> {
@@ -1314,12 +1343,10 @@ export async function createAutomaticContextProjection(
     if (projection.status === 'confirmed') return projection;
   }
 
-  // 基线开关（2026-09-22 起默认反转）：正文自动注入默认**关闭**——查重与
-  // 知识发现由常驻目录＋模型自取承担（A/B 对照实验：注入抑制自取 5↔10 次、
-  // 命中增益仅 5/12↔3/12，砍注入的决策依据）。COGSEED_RECALL_BASELINE_TOP=N>0
-  // 显式恢复旧的"自动挑 N 条塞正文"行为（回滚通道与实验复跑都保留）。
-  // 普通资产仍受原有两个自动选择开关约束。经过本人保存决定核对的长期
-  // 回答偏好独立按既定边界带入，不因此升级成熟度或取得工具执行授权。
+  // 正文自动注入默认关闭，知识发现由常驻目录及模型主动读取承担。
+  // COGSEED_RECALL_BASELINE_TOP=N>0 可显式启用自动选择 N 条正文。
+  // 普通资产仍受自动选择开关约束；本人保存决定核对过的长期回答偏好
+  // 按独立边界带入，不因此升级成熟度或取得工具执行授权。
   const baselineTopEnv = process.env.COGSEED_RECALL_BASELINE_TOP;
   const baselineTop = baselineTopEnv === undefined || baselineTopEnv.trim() === '' ? Number.NaN : Number(baselineTopEnv);
   const baselineEnabled = Number.isFinite(baselineTop) && baselineTop > 0;
@@ -1350,7 +1377,7 @@ export async function createAutomaticContextProjection(
       omittedRefs.push({ assetId: asset.id, reason: 'workspace_disabled' });
       continue;
     }
-    // 资产池全局共享（2026-08-17 最终版）：空间会话的自动注入可引用整个
+    // 资产池全局共享：空间会话的自动注入可引用整个
     // 池子（含其它空间资产与全局资产）；tab 显示才按空间过滤。
     if (!(await hasEnabledAutomaticSources(userId, asset))) {
       omittedRefs.push({ assetId: asset.id, reason: 'source_unavailable' });
@@ -1381,7 +1408,8 @@ export async function createAutomaticContextProjection(
   if (!eligibleAssets.length && !standingPreferences.length) return undefined;
 
   const selection: SemanticSelection = eligibleAssets.length
-    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, omittedRefs, input.taskText, workspaceId, projectId)
+    ? await applySemanticSelection(userId, eligibleAssets, taskText, options, omittedRefs, input.taskText, workspaceId, projectId,
+      { projectId, workspaceId, agentId, roleId, conversationKind, fileKinds })
     : { assets: [], degraded: false };
   standingPreferences.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id));
   const combined = [...standingPreferences, ...selection.assets];
@@ -1472,12 +1500,8 @@ async function validateFrozenProjectionAssets(
       // context, so omit the out-of-scope item while keeping other frozen
       // assets usable. Preview/confirmation still reject an ineligible asset.
       if (requireCommitted) continue;
-      // 2026-10-14 真机（cid 0ed97b36eea4）：唤醒审批走确认路径，此前把"作用域
-      // 不匹配"升级成整单硬拒 -> 用户点三次审批三次 projection_asset_ineligible，
-      // 且无任何出路（同一条资产在 committed 路径下只是被逐条跳过）。已确认的投影
-      // 不该因为审批时刻的临时作用域被全盘否掉：与 committed 口径一致地逐条收敛，
-      // 其余冻结资产照常可用。**预览/未确认**的投影仍保持严格拒绝（安全门不放宽）；
-      // 资产缺失/停用/版本漂移仍按各自错误码拒绝。
+      // 已确认投影按当前作用域逐项收敛，保留其他可用冻结资产；
+      // 预览和未确认投影仍严格拒绝，缺失、停用及版本漂移使用各自错误码。
       if (isCommittedProjection(projection)) continue;
       throw projectionKnowledgeError('projection_asset_ineligible');
     }
@@ -1492,17 +1516,8 @@ async function validateFrozenProjectionAssets(
   return out;
 }
 
-/** 确认/预览口径的资产校验。
- *
- * 2026-10-14 真机事故（cid 0ed97b36eea4）：唤醒审批走这条路径，而它此前**没有
- * 作用域形参**，`isAssetEligibleForProjection` 拿到的是默认空作用域 `{}` —— 任何
- * "资格依赖当前 project/space/task"的资产都被判成不合格，抛
- * `projection_asset_ineligible`，用户点三次审批三次同码失败，且没有任何出路。
- * 资产在确认时是合格的，就该按**确认时/调用方传入的**作用域复核。
- *
- * 形参保持可选、默认空对象：不传作用域的老调用点行为**一字不变**（向后兼容），
- * 只有显式传入作用域的调用点才按真实上下文判定——不会放宽任何既有校验。
- */
+/** 确认或预览时按调用方传入的 project/space/task 作用域复核资产资格。
+ * 作用域可选，省略时保留旧调用方的空作用域语义。 */
 export function validateProjectionAssetVersions(
   userId: string,
   projection: ContextProjectionRecord,
@@ -1520,13 +1535,8 @@ export function validateCommittedProjectionAssetVersions(
   return validateFrozenProjectionAssets(userId, projection, true, runtimeScope);
 }
 
-/** 系统级版本递增（如 scope 词表迁移 bump version）后，同步刷新仍存活
- *  committed 投影冻结的 assetVersions。committed 校验器在读快照之前就强
- *  校验 `expected[assetId] !== asset.version → throw`，不刷新的话迁移会让
- *  requirement 存续期内每回合注入整体失败（projection_asset_version_changed）
- *  且无任何回退——旧实现的安全论证引用的是非 committed 路径的宽容跳过，
- *  论证对象错了（2026-09-14 修复）。只动版本号快照，注入内容仍按投影
- *  确认时冻结的语句；返回刷新的投影条数。 */
+/** 系统级版本递增后同步刷新存活 committed 投影的 assetVersions。
+ * 仅更新版本号快照，注入正文仍使用确认时冻结的内容；返回刷新数量。 */
 /** 全量列举 confirmed 投影（不过 listContextProjections——它 clamp 条数，
  *  存量超过时最老的投影漏掉。版本删除冻结副本（asset-service）等"必须
  *  一个不漏"的消费方用这个；条数敏感的常规列表仍走 listContextProjections）。 */
@@ -1554,7 +1564,7 @@ export async function listAllConfirmedProjections(userId: string): Promise<Conte
   return confirmed;
 }
 
-/** 彻底清除的级联段（specs/008 T005）：把一条资产从**全部**投影里摘掉。
+/** 彻底清除的级联段：把一条资产从**全部**投影里摘掉。
  *
  *  为什么必须做：`assetVersionSnapshots` 是「版本真删」时为已确认注入冻结的
  *  **内容副本**（`deleteAbilityAssetVersion` 写入），正文就在里面。只清主记录
@@ -1650,10 +1660,10 @@ export async function refreshCommittedProjectionAssetVersion(
     await updateRecallJsonRecord(userId, 'projections', projection.id, (inner) => {
       const current = asProjection(inner);
       if (!current.assetVersions || current.assetVersions[assetId] === newVersion) return current;
-      // 单调版本守卫（r2 补齐）：refresh 遍历+读盘期间资产可能又前进了一版，
+      // 单调版本守卫：refresh 遍历+读盘期间资产可能又前进了一版，
       // 后到的旧 refresh 不得把投影版本回退——仅当新版本号大于锁内当前值
       // 才覆写；相等、更小、或任一侧 NaN/非数字（比较为 false）一律跳过。
-      // 守卫必须在锁内 updater：外层预读(:1300)通过后锁前仍可能变化。
+      // 守卫必须在锁内 updater：外层预读通过后锁前仍可能变化。
       const nextVersion = Number(newVersion);
       const currentVersion = Number(current.assetVersions[assetId] ?? 0);
       if (!(nextVersion > currentVersion)) return current;
@@ -1878,7 +1888,7 @@ export async function confirmContextProjection(userId: string, projectionId: str
   return projection;
 }
 
-/** 模型自选投影的追加（2026-09-18）：同一条投影在任务内可反复追加资产
+/** 模型自选投影的追加：同一条投影在任务内可反复追加资产
  *  （"基线 + 模型追加"里的追加）。只对 authorization='model_selected' 开放，
  *  且允许在 confirmed 态追加——这是模型自选线独有的编辑面，用户确认的投影
  *  仍只能在 preview 态改。 */
@@ -1900,10 +1910,10 @@ export async function appendAssetsToModelSelectedProjection(
   });
 }
 
-/** 某会话里用户引用被拦的留痕（2026-09-25 验收修复 US-604 AC4/AC7）：发送前重检
+/** 某会话里用户引用被拦的留痕：发送前重检
  *  不再静默丢弃——界面据此在回执卡上说明"最近一轮为什么没带上、是哪条规则"。
  *  只认该会话 `user_confirmed` + `user_pinned` 投影的 omitted 回执，按时间倒序；
- *  只返回标题 + 规则标识 + 轮次，**不含正文**（宪法 III / FR-007 AC3）。 */
+ *  只返回标题 + 规则标识 + 轮次，**不含正文**。 */
 export async function listConversationOmissions(
   userId: string,
   conversationId: string,
@@ -1949,11 +1959,11 @@ export async function listConversationOmissions(
   return out;
 }
 
-/** 会话里用户 @ 钉住的资产（2026-09-25 验收修复 US-601）：composer 引用条要显示
+/** 会话里用户 @ 钉住的资产：composer 引用条要显示
  *  「名称 · vN」并支持撤销，但 `listContextProjections` 只给 id 与版本号——渲染层
  *  不得上屏内部 id，所以标题必须在主进程解析好再给。
  *  只认 `user_confirmed` + purpose `user_pinned` 的 confirmed 投影；只返回
- *  `{projectionId, assetId, title, version}`，**不含正文**（宪法 III / FR-007 AC3）。 */
+ *  `{projectionId, assetId, title, version}`，**不含正文**。 */
 export async function listUserPinnedAssets(
   userId: string,
   conversationId: string,
@@ -1982,7 +1992,7 @@ export async function listUserPinnedAssets(
   return out;
 }
 
-/** 撤销一条投影的共用实现（2026-09-18 模型自选线 / 2026-09-25 用户钉住线）：
+/** 撤销一条投影的共用实现：
  *  把 confirmed 置为 revoked——注入查找只认 confirmed，所以撤销后本会话后续
  *  回合不再带入这批资产；已发生的注入/使用记录保留（历史不可改写），重复撤销
  *  幂等。哪一类授权可走撤销线由 `isRevocable` 决定，拒绝消息由调用方给出。 */
@@ -2018,7 +2028,7 @@ export async function revokeModelSelectedProjection(
   );
 }
 
-/** 撤销用户自己 @ 钉住的资产（2026-09-25 验收修复 US-601 AC3）：引用回执必须
+/** 撤销用户自己 @ 钉住的资产：引用回执必须
  *  可撤销，否则"我挂上去的就下不来"。只认 `user_confirmed` + purpose
  *  `user_pinned`（@ 引用与「用到当前对话」写的就是这一类）；用户确认过的语义
  *  投影（`conversation_reply` 等）仍不在这条一键撤销线上，边界与模型自选线一致。 */

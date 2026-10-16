@@ -1,10 +1,11 @@
 /** Versioned extraction envelopes. An ontology-only proposal has a change
  * explanation, never a synthetic cognition body; materialization is separate. */
 import { z } from 'zod';
+import { formationComparisonSchema } from './formation-comparison';
 
 const text = (limit: number) => z.string().min(1).max(limit).refine(value => Boolean(value.trim()));
 const labels = z.array(text(160)).min(1).max(100);
-const boundaries = z.array(text(2000)).max(100).optional();
+const boundaries = z.array(text(500)).max(32).optional();
 const cognition = z.object({
   judgment: text(4000), value: text(1000), summary: text(1000),
   contentCategory: z.string().max(100).optional(),
@@ -13,6 +14,7 @@ const cognition = z.object({
   risk: z.enum(['low', 'medium', 'high']), evidence: labels,
   targetAssetId: z.string().regex(/^[A-Za-z0-9_-]+$/).max(160).optional(),
   applicableWhen: boundaries, forbiddenWhen: boundaries, uncertainty: text(1000).optional(),
+  comparison: formationComparisonSchema.optional(),
 }).strict();
 const explanation = z.object({
   description: text(4000), value: text(1000), summary: text(1000),

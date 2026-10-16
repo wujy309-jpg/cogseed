@@ -6,7 +6,11 @@ import { createHash } from 'node:crypto';
 import { captureSummaryModelResponse, captureSummaryModelResponseWithEvidence } from '../../../helpers/capture-summary-model';
 import { drainMainRuntimeForTest } from '../../../helpers/drain-main-runtime';
 const mocks = vi.hoisted(() => ({ run: vi.fn(), runSummary: vi.fn(), buildRunner: vi.fn(), getMessages: vi.fn(), getMessagesPage: vi.fn(), getConversation: vi.fn(), listConversations: vi.fn() }));
-vi.mock('../../../../src/main/features/auth', () => ({ hasConfiguredModel: () => ({ configured: true }), getConfiguredModelOAuthExpiredMessage: () => null }));
+vi.mock('../../../../src/main/features/auth', () => ({
+  listEntriesForUser: async () => ({ entries: [] }),
+  hasConfiguredModelForUser: () => ({ configured: true }),
+  getConfiguredModelOAuthExpiredMessageForUser: () => null,
+ hasConfiguredModel: () => ({ configured: true }), getConfiguredModelOAuthExpiredMessage: () => null }));
 vi.mock('../../../../src/main/features/chats', () => ({ getMessages: mocks.getMessages, getMessagesPage: mocks.getMessagesPage, getConversation: mocks.getConversation, listConversations: mocks.listConversations }));
 vi.mock('../../../../src/main/model/core-agent/runner', () => ({ buildRunner: mocks.buildRunner }));
 vi.mock('../../../../src/main/features/recall/asset-title-suggestion', () => ({ suggestAbilityAssetTitle: async () => ({ title: '项目会议议程' }) }));
@@ -110,7 +114,7 @@ it('six-node closure: carries one nightly proposal through review, ordinary retr
       const source = request.messages.find((item: any) => item.id === evidence.messageId);
       return { text: JSON.stringify({ candidates: [{ judgment: correctedBody, value: '保留原模板并补足部署风险场景的准备边界。',
         summary: '项目会议准备风险例外', suggestedType: 'template', suggestedScope: 'general', suggestedAction: 'update',
-        targetAssetId: saved.asset.id, risk: 'low', evidence: [source.label] }] }), meta: {} };
+        targetAssetId: saved.asset.id, risk: 'low', evidence: [source.label], comparison: { relation: 'exception', reason: 'Explicit deployment-risk exception preserves the prior meeting structure.', targetAssetId: saved.asset.id, targetVersion: '1', targetQuote: saved.asset.statement } }] }), meta: {} };
     });
     expect((await capture.runRecallCapture(uid, nextNight.id)).status).toBe('review_ready');
     const update = (await candidates.listRecallCandidates(uid)).find(row => row.status === 'pending_review' && row.targetAssetId === saved.asset.id)!;
@@ -226,4 +230,13 @@ it.each([false, true])('automatically completes and reverses a supported prefere
     expect(await undo.undoAutomaticFormation('capture-user', candidate.id, preview.token)).toMatchObject({ alreadyUndone: true });
 
   } finally { stop(); }
+});
+
+it('preserves complete supported boundaries instead of silently slicing later exceptions', async () => {
+  const { parseRecallCaptureOutput } = await import('../../../../src/main/features/recall/capture-service');
+  const conditions = Array.from({ length: 12 }, (_, index) => `条件${index}：` + '完整条件文字。'.repeat(45) + '末尾保留仅限项目甲。');
+  const raw = { candidates: [{ judgment: '项目甲会议使用完整结构，并保留每一项适用条件和例外。', value: '让末尾的限制在保存和使用时仍然生效。', summary: '完整条件保留', suggestedScope: 'general', suggestedAction: 'create', risk: 'low', evidence: ['m1'], applicableWhen: conditions }] };
+  expect(parseRecallCaptureOutput(JSON.stringify(raw), new Set(['m1']))[0].applicableWhen).toEqual(conditions);
+  const oversized = { ...raw.candidates[0], applicableWhen: ['完整条件。'.repeat(110)] };
+  expect(parseRecallCaptureOutput(JSON.stringify({ candidates: [oversized] }), new Set(['m1']))).toEqual([]);
 });

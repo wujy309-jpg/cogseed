@@ -1,7 +1,7 @@
 /* ============================================================================
  * 认知资产 · 视图层：系统活动页（cognition-assets/review-views.js）
  *
- * 2026-10-12 收敛：系统活动只承接已形成的夜间认知建议和真实处理历史。
+ * 收敛：系统活动只承接已形成的夜间认知建议和真实处理历史。
  * viewActivity 提供需要关注（默认）与已处理两个视角：
  *  - 需要关注：夜间价值判断通过、提取完成且证据齐全的具体认知建议。
  *  - 已处理：保留候选的真实终态与历史；后台任务和治理问题不入列。
@@ -158,7 +158,7 @@
     const target = asset ? T('cognition.activity_approval_target', '目标：{title} · 当前 v{current} · 提议基于 v{baseline}', { title: asset.title, current: asset.version, baseline: proposal.baselineVersion }) : T('cognition.activity_target_missing', '未读到目标资产');
     const requestedFields = [...new Set([...proposal.fields, ...Object.keys(proposal.payload)])];
     const fields = requestedFields.filter(key => Object.prototype.hasOwnProperty.call(labels, key));
-    const canConfirm = readableApproval(proposal) && !processed && !S.candidatesError && !S.assetsError && asset && ['active', 'paused'].includes(asset.status) && String(asset.version) === String(proposal.baselineVersion);
+    const canConfirm = readableApproval(proposal) && !processed && !S.loading && !S.candidatesError && !S.assetsError && asset && ['active', 'paused'].includes(asset.status) && String(asset.version) === String(proposal.baselineVersion);
     return `<section class="ca-review-target">${read(T('cognition.activity_target_label', '目标 / 版本'), target)}</section>
       <section class="ca-review-content"><h3>${esc(T('cognition.activity_approval_proposed', '拟更新内容'))}</h3>${fields.map(key => read(labels[key], proposal.payload[key])).join('')}</section>
       <details class="details ca-review-chain"><summary>${esc(T('cognition.activity_chain_title', '依据与版本对比'))}</summary>${fields.map(key => read(labels[key], proposal.beforeValues?.[key])).join('')}</details>
@@ -167,7 +167,18 @@
       ${processed ? '' : `<div class="actions actions-right" data-activity-primary-actions>${btn(T('cognition.activity_save_update', '保存更新'), 'activity-approval', { id: proposal.id, data: { decision: 'confirm' }, primary: true, disabled: !canConfirm })}${btn(T('cognition.activity_defer', '稍后处理'), 'activity-approval', { id: proposal.id, data: { decision: 'defer' }, disabled: !!S.candidatesError })}${btn(T('cognition.inbox_action_reject', '拒绝'), 'activity-approval', { id: proposal.id, data: { decision: 'reject' }, danger: true, disabled: !!S.candidatesError })}</div>`}`;
   }
   function activityDetail(row, processed) {
-    if (!row) return empty(T('cognition.activity_select_item', '选择一项查看详情'), T('cognition.activity_select_hint', '在左侧浏览建议，核对内容与来源后逐项处理。'));
+    if (!row) {
+      if (S.route.approvalId) {
+        const message = empty(
+          T(S.loading ? 'cognition.activity_loading' : S.candidatesError ? 'cognition.review_load_failed_title' : 'cognition.activity_approval_missing', S.loading ? '正在读取活动…' : S.candidatesError ? '清单没能读取' : '这条提议暂不可用'),
+          T('cognition.activity_approval_missing_hint', '请刷新核对；不会改为打开其他提议。'));
+        if (!narrowActivity()) return message;
+        // Explicit links retain their own read state even without a row. The
+        // narrow modal still needs its existing close control for legal focus.
+        return `<header class="ca-activity-detail-head"><div class="ca-activity-detail-heading"><h2>${esc(T('cognition.activity_detail', '活动详情'))}</h2></div><div class="ca-activity-detail-badges">${btn(T('common.close', '关闭'), 'activity-close', { small: true, className: 'o' })}</div></header><div class="ca-activity-detail-body" data-activity-key="approval:${esc(S.route.approvalId)}" role="${!S.loading && S.candidatesError ? 'alert' : 'status'}">${message}</div>`;
+      }
+      return empty(T('cognition.activity_select_item', '选择一项查看详情'), T('cognition.activity_select_hint', '在左侧浏览建议，核对内容与来源后逐项处理。'));
+    }
     let content;
     if (row.route.candidateId) content = activityCandidate(row, processed);
     else if (row.route.approvalId) content = activityApproval(row, processed);
@@ -214,9 +225,9 @@
       }
     }
 
-    if (!selected && !narrowActivity()) selected = rows[0];
+    if (!selected && !route.approvalId && !narrowActivity()) selected = rows[0];
     if (selected) activitySelection = selected.key;
-    const showDrawer = isNarrow && !!selected && activityDrawer;
+    const showDrawer = isNarrow && (!!selected || !!route.approvalId) && activityDrawer;
     const failed = S.candidatesError;
     const incomplete = failed || S.loading;
     const table = rows.length ? `<table class="ca-activity-table"><thead><tr><th>${esc(T('cognition.activity_proposed_change', '建议变化'))}</th><th>${esc(T('cognition.activity_scope', '适用范围'))}</th><th>${esc(T('cognition.activity_time', '发生时间'))}</th><th>${esc(T(processed ? 'cognition.activity_result' : 'cognition.activity_decision', processed ? '处理结果' : '需要你决定'))}</th></tr></thead><tbody>${rows.map(row => `<tr role="button" tabindex="0" aria-pressed="${selected?.key === row.key}" aria-label="${esc(row.title + '，' + row.result)}" class="${selected?.key === row.key ? 'is-selected' : ''}" data-act="activity-select" data-id="${esc(row.key)}"><td><strong>${esc(row.title)}</strong><p>${esc(normalizeActivityText(row.detail))}</p></td><td>${esc(row.scope)}</td><td>${esc(row.at)}</td><td>${esc(row.result)}<span aria-hidden="true"> ›</span></td></tr>`).join('')}</tbody></table>`
@@ -247,6 +258,12 @@
   NS.activityController = {
     handledActions: ACTIVITY_ACTIONS,
     writeActions: ACTIVITY_WRITE_ACTIONS,
+    // An explicit conversation deep link is an open-detail action, unlike a
+    // default list selection or a desktop-to-narrow resize.
+    openLinkedDetail() {
+      activityDrawer = narrowActivity();
+      activityWasNarrow = narrowActivity();
+    },
     captureRenderState(root) {
       const body = root?.querySelector?.('.ca-activity-detail-body');
       const list = root?.querySelector?.('.ca-activity-table-wrap');
@@ -310,7 +327,7 @@
       if (act === 'activity-approval') {
         const proposal = (S.assetApprovals || []).find(item => String(item.id) === id);
         const decision = el.dataset.decision;
-        if (!proposal || !['pending', 'deferred'].includes(proposal.state) || S.candidatesError
+        if (!proposal || !['pending', 'deferred'].includes(proposal.state) || S.loading || S.candidatesError
           || !['confirm', 'defer', 'reject'].includes(decision)) return true;
         if (decision === 'confirm') {
           const asset = (S.assets || []).find(item => String(item.id) === String(proposal.assetId));

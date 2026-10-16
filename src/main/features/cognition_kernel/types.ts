@@ -1,5 +1,5 @@
 /**
- * cognition_kernel/types — 认知内核契约层（S1，2026-10-02）。
+ * cognition_kernel/types — 认知内核契约层。
  *
  * 把「本体 ↔ 认知资产」从"两套账"固化成三个可实现的契约：
  *   ① 内容形态 → 唯一归属        （ContentHome；判定见 routing.ts）
@@ -10,7 +10,7 @@
  * 数据来源（适配层见 resolve.ts 的 loadPersonalSourceSnapshot）。
  */
 
-/** 一个内容只有一个家：六个归属（拍板口径，2026-10-02）。 */
+/** 一个内容只有一个归属；保留历史分类供旧记录读取。 */
 export type ContentHome =
   /** 新认知统一归属，保留历史归属用于兼容读取。 */
   | 'cognition'
@@ -49,7 +49,7 @@ export interface ResolvedPersonalField {
   groupId?: string;
   value: string;
   source: PersonalFieldSource;
-  /** PoValue.id 或 asset.id —— 全链路可归因（王星凯六级刻度的前提）。 */
+  /** PoValue.id 或 asset.id，用于回溯字段值的权威来源。 */
   sourceId: string;
   /** 资产来源时的版本号；本体手编值没有版本。 */
   version?: string;
@@ -83,7 +83,7 @@ export interface MissingPersonalField {
   reason: MissingReason;
 }
 
-/** 统一读接口的输出：bound / missing 两段，语义对齐史雨萱 ContextProjection.missingSlots。 */
+/** 统一读接口的输出：已绑定字段与仍缺失字段分开返回。 */
 export interface PersonalFieldResolution {
   bound: ResolvedPersonalField[];
   missing: MissingPersonalField[];
@@ -159,7 +159,7 @@ export type InboxItemKind = ContentHome | 'unknown';
 
 // ── 变更集（Delta）─────────────────────────────────────────────────────────
 
-/** 补丁操作（沿用 Jev 参考实现已验证的形状）。 */
+/** 支持的字段级变更操作。 */
 export type DeltaOp = 'add' | 'update' | 'remove' | 'set';
 
 /** 改动从哪来：决定它要不要人工确认，以及归因到哪条规则。 */

@@ -1,14 +1,4 @@
-/**
- * 回归（b2 执行单元）：坏档三件套公共 helper 收敛三处同构点（P-r1-88 + P-r2-7）。
- *
- * 三件套（决策卡拍板）：读到坏档（非 ENOENT）→ copy `.corrupt-<ts>` 备份
- * （不动原文件）→ 读侧结构化错误（不是空表）→ 写侧拒绝；产品内
- * 「从备份恢复/重置」一键出路（B 段已批）。词表侧主用例在
- * probe-r1-glossary-badjson-overwrite.test.ts（已启用）；这里覆盖：
- *  - po 主档同构点（坏 JSON → 备份 + editPoDoc 拒写 + 恢复/重置/自愈）；
- *  - 候选池（P-r2-7：读错吞掉一切 IO 错误 → 只吞真 ENOENT，其余拒写）；
- *  - 词表重置出路（reset 后真 ENOENT 空初始化、可写恢复，备份保留）。
- */
+/** 本体、候选池和词表坏档的结构化错误、拒写、备份及恢复入口。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -55,7 +45,7 @@ function corruptBackupsOf(file: string): string[] {
   return fs.readdirSync(path.dirname(file)).filter((n) => n.startsWith(`${path.basename(file)}.corrupt-`));
 }
 
-describe('P-r1-88 po 同构点：坏 JSON → 备份 + 拒写 + 恢复入口', () => {
+describe('po 同构点：坏 JSON → 备份 + 拒写 + 恢复入口', () => {
   it('坏 JSON → copy 备份（原文件不动）→ editPoDoc 拒写，盘上字节保留', async () => {
     const uid = 'reg_po_bad';
     const store = await loadPoStore();
@@ -143,7 +133,7 @@ describe('P-r1-88 po 同构点：坏 JSON → 备份 + 拒写 + 恢复入口', (
   });
 });
 
-describe('P-r2-7 候选池：读错只吞真 ENOENT，其余备份+拒写+如实上报', () => {
+describe('候选池：读错只吞真 ENOENT，其余备份+拒写+如实上报', () => {
   it('读错（EACCES）→ listCandidates 带回 corrupt + addCandidate 拒写 + 盘上不动', async () => {
     const uid = 'reg_cand_io';
     const cands = await import('../../src/main/features/personal_ontology_candidates');
@@ -186,12 +176,10 @@ describe('P-r2-7 候选池：读错只吞真 ENOENT，其余备份+拒写+如实
   });
 });
 
-describe('P-r1-88 词表重置出路：reset 后空初始化可写，备份保留', () => {
-  // b2 回滚：词表读侧（loadGlossary 抛 CorruptFileError + .corrupt 备份）已按
-  // before 快照回滚——与既有契约测试「JSON 损坏 → 降级空表且不抛错」冲突。
-  // 本用例的前置（loadGlossary 抛错 + 备份在场）不再成立，随读侧一并回滚挂起；
-  // po/候选池两段的对应行为未回滚，保持 active。
-  it.skip('【b2 回滚】坏 JSON → reset → upsertEntry 恢复可用，.corrupt 备份仍在原目录', async () => {
+describe('词表重置出路：reset 后空初始化可写，备份保留', () => {
+  // 该用例依赖词表坏档抛错并生成备份；当前兼容读取语义不满足此前置条件。
+  // 维持跳过，待词表错误、备份与重置恢复入口的契约统一后调整断言。
+  it.skip('词表坏 JSON 重置后可重新写入，原目录保留损坏备份', async () => {
     const uid = 'reg_glos_reset';
     const glossary = await import('../../src/main/features/transcript_glossary');
     const { userTranscriptGlossaryFile } = await import('../../src/main/paths');

@@ -280,15 +280,19 @@ async function buildTaskExecutionContext(
   conversationId?: string,
 ): Promise<unknown[] | undefined> {
   const context = [...(input.context ?? [])];
+  const conversation = conversationId ? await (await import('../chats')).getConversation(userId, conversationId).catch(() => undefined) : undefined;
+  const assetScope = { ...(task.agentId ? { agentId: task.agentId } : {}), taskText: input.task, purpose: input.task,
+    ...(conversation?.project_id ? { projectId: conversation.project_id } : {}),
+    ...(conversation?.space_id || task.spaceId ? { workspaceId: conversation?.space_id || task.spaceId } : {}),
+    ...(conversation?.kind ? { conversationKind: conversation.kind } : {}) };
   if (task.abilityAssetIds?.length) {
     context.push(...await buildDispatchedRuntimeAssetContext(userId, task.abilityAssetIds, {
-      ...(task.agentId ? { agentId: task.agentId } : {}),
-      taskText: input.task,
-      purpose: input.task,
+      taskId: task.taskId, executionId: task.executionId,
+      ...assetScope,
     }));
   }
   if (conversationId) {
-    const assetContext = await buildRuntimeAssetContext(userId, conversationId, task.taskId);
+    const assetContext = await buildRuntimeAssetContext(userId, conversationId, task.taskId, task.executionId, assetScope);
     if (assetContext.length) context.push(...assetContext);
   }
   return context.length ? context : undefined;
@@ -469,7 +473,7 @@ async function mapRuntimeEvent(
       type: 'task.completed',
       payload: { text: String(event.text || ''), ...(metricsMeta ? { metrics: metricsMeta } : {}) },
     };
-    return finishRuntimeTask(
+    const finished = await finishRuntimeTask(
       userId,
       latest ?? task,
       'completed',
@@ -479,6 +483,13 @@ async function mapRuntimeEvent(
       resultDeliveryStore,
       isCurrentRun,
     );
+    if ((!finished.executionKind || finished.executionKind === 'cogseed-native') && finished.status === 'completed') {
+      try {
+        const { checkPersistedRuntimeCognitionOutput } = await import('../recall/cognition-output-check');
+        await checkPersistedRuntimeCognitionOutput(userId, finished.taskId, signal);
+      } catch { log.warn('Runtime terminal text check unavailable; completed task preserved'); }
+    }
+    return finished;
   }
   if (event.type === 'error' && event.status === 'cancelled') {
     if (signal.aborted && signal.reason === 'runtime_restart') {

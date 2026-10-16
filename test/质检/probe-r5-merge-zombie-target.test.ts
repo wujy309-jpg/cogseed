@@ -1,22 +1,5 @@
 import { seedStoredAbilityAsset } from '../helpers/stored-ability-asset';
-/**
- * 探针 r5（边界测试员 · 第 5 轮）→ 主题：归并状态机的 target 侧校验缺口。
- *
- * 疑点：mergeAbilityAssets 对 source 有两道门（assertMutableAbilityAsset +
- * mergedIntoAssetId 已归并拒绝），对 target 只有一道 assertMutableAbilityAsset
- * ——它放行 paused/archived。于是：
- *   ① 已归并的 source（archived + mergedIntoAssetId=X）可再被选作 target：
- *     新内容沉入一个「声称自己已并入 X」的归档中间节点，X 永远收不到；
- *   ② 普通 archived 资产作 target：source 的最新在用内容直接沉入不参与注入的
- *     归档记录，归并「合并同类」的语义落空。
- *
- * 现行 UI 是否会列出归档资产作 target 未证（渲染层筛选可能挡住）——服务层
- * 状态机缺口确凿，报 pending。风格对齐 regression-r1-asset-lifecycle.test.ts。
- *
- * 2026-09-30 r1 收尾（记账员）：用例 1（僵尸链）对应待议 P-r1-3（只挡已归并
- * vs 连手动归档 target 一起挡，行为边界口径待拍板）→ it.skip，断言锁定现状；
- * 用例 2 对照组（source 侧已归并的重复归并被拒，不依赖漏洞）保留 active。
- */
+/** 归并源再次作为目标时的内容去向与归并链一致性。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -66,8 +49,8 @@ async function mkAsset(id: string) {
 
 const ACT = { actor: 'user' as const, reason: 'probe merge' };
 
-describe('probe r5 › 归并 target 侧无终态/已归并校验（用例 1 待议 P-r1-3）', () => {
-  it.skip('已归并源可再当 target：形成 m3→m1→m2 僵尸链，m2 永远收不到 m3 的内容（待议 P-r1-3，拍板前 skip）', async () => {
+describe('归并 target 侧无终态/已归并校验', () => {
+  it.skip('已归并源再次作为目标时形成 m3→m1→m2 链，最终目标未收到新内容', async () => {
     const assets = await loadAssets();
     await mkAsset('aa-m1');
     await mkAsset('aa-m2');

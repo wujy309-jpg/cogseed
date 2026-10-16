@@ -1,5 +1,5 @@
 /**
- * 统一认知库存储内核测试（S3）。
+ * 统一认知库存储内核测试。
  *
  * 覆盖：懒创建读路径零副作用、set 槽位建/更、幂等跳过、update/remove 语义
  * （软删墓碑、删后拒改）、全批原子（一败全不动）、experience/task_local 拒收、
@@ -169,7 +169,7 @@ describe('cognition_kernel/store — 统一认知库内核', () => {
 
   it('全批原子：批内一个失败 → 主档保持原样（全或无）', async () => {
     const { applyCognitionDeltas, loadCognitionStoreSync } = await kernel();
-    const good = await build({ op: 'set', home: 'personal_fact', fieldName: '称呼', after: '子安' });
+    const good = await build({ op: 'set', home: 'personal_fact', fieldName: '称呼', after: '示例用户甲' });
     await applyCognitionDeltas(UID, [good]);
     const before = fs.readFileSync(storeFile(), 'utf8');
 
@@ -263,12 +263,12 @@ describe('cognition_kernel/store — 统一认知库内核', () => {
     // 加一个自定义家（联系人，断言语义）。
     const withCustom = [...seeded.homes, {
       home: 'contact', label: '联系人', definition: '与我协作的人及其关键信息。',
-      examples: ['张三是支付网关的对接人'], pool: 'ontology' as const, store: { kind: 'assertion' as const },
+      examples: ['示例联系人是支付网关的对接人'], pool: 'ontology' as const, store: { kind: 'assertion' as const },
     }];
     const replaced = await replaceCognitionHomes(UID, withCustom);
     expect(replaced.ok).toBe(true);
 
-    const delta = await build({ op: 'set', home: 'contact', fieldName: '对接人', after: '张三' });
+    const delta = await build({ op: 'set', home: 'contact', fieldName: '对接人', after: '示例联系人' });
     const r = await applyCognitionDeltas(UID, [delta]);
     expect(r.ok).toBe(true);
     const doc = loadCognitionStoreSync(UID);

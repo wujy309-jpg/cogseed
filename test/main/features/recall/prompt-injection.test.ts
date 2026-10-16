@@ -23,7 +23,7 @@ afterEach(async () => {
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
-// 自动投影是"静默默认注入"，按 PRD 3.6 只接纳 Transfer Verified 及以上。
+// 自动投影是"静默默认注入"，只接纳 Transfer Verified 及以上。
 // 这些用例考的是相关性 / 提示词结构 / 引用对齐，不是成熟度闸门，所以先把资产
 // 抬到够格的档位；闸门本身由 formal-asset-runtime.test.ts 覆盖。
 async function elevateToTransferVerified(assetId: string) {
@@ -88,8 +88,15 @@ async function createAssetWith(input: { judgment: string; summary: string; sourc
 }
 
 const fakeSemanticOptions = {
-  embedTexts: async (texts: string[]) => texts.map((text) => {
-    const lower = text.toLowerCase();
+  // These tests isolate rendering/relation/budget contracts, not model quality.
+  assessApplicability: async (message: string) => {
+    const payload = JSON.parse(message) as { currentTask: string; candidates: Array<{ assetId: string; version: string; statement: string }> };
+    return JSON.stringify({ decisions: payload.candidates.map((asset, index) => ({ assetId: asset.assetId, version: asset.version,
+      verdict: 'applicable', reason: 'Fixture guidance applies to the supplied task.', taskQuote: payload.currentTask.slice(0, 1000),
+      assetQuote: asset.statement.slice(0, 1000), rank: index })) });
+  },
+  embedTexts: async (texts: string[]) => texts.map((text, index) => {
+    const lower = (index === 0 ? text : text.split('\n').slice(0, 2).join('\n')).toLowerCase();
     if (lower.includes('oauth')) return [1, 0];
     if (lower.includes('database')) return [0, 1];
     return [0.2, 0.2];
@@ -233,7 +240,7 @@ describe('confirmed Recall projection prompt injection', () => {
     expect(result.promptBlock).toContain('<confirmed-ability-assets>');
     expect(result.promptBlock).toContain('Review OAuth callback and token exchange security.');
     expect(result.promptBlock).not.toContain('Plan database migrations with rollback windows.');
-    // M-3: 适用/禁用条件随注入带进 prompt，模型拿得到硬约束。
+    // 适用/禁用条件随注入带进 prompt，模型拿得到硬约束。
     expect(result.promptBlock).toContain('applicable_when');
     expect(result.promptBlock).toContain('forbidden_when');
     expect(result.promptBlock).toContain('Unrelated casual conversation');
@@ -291,8 +298,9 @@ describe('confirmed Recall projection prompt injection', () => {
       workspaceId: 'workspace-a',
     }, {
       minScore: 0.3,
-      embedTexts: async (texts: string[]) => texts.map((text) => (
-        text.includes('家庭一周晚餐') ? [1, 0] : [0, 1]
+      assessApplicability: fakeSemanticOptions.assessApplicability,
+      embedTexts: async (texts: string[]) => texts.map((text, index) => (
+        index === 0 || text.includes('家庭一周晚餐计划') ? [1, 0] : [0, 1]
       )),
     });
 
@@ -411,7 +419,7 @@ describe('confirmed Recall projection prompt injection', () => {
     // 2026-09-19 归一化：value 缺省兜底=judgment，标题（summary）不再拼进正文。
     expect(result.promptBlock).toContain('Review OAuth callback and token exchange security.');
     expect(result.promptBlock).not.toContain(unrelated.asset.statement);
-    // M-3: committed 投影同样带边界条件。
+    // committed 投影同样带边界条件。
     expect(result.promptBlock).toContain('applicable_when');
     expect(result.promptBlock).toContain('forbidden_when');
     expect(result.promptBlock).toContain('Unrelated casual conversation');
@@ -471,8 +479,8 @@ describe('confirmed Recall projection prompt injection', () => {
       confirm: true,
     }, {
       minScore: 0.3,
-      embedTexts: async (texts: string[]) => texts.map((text) => {
-        if (text.includes('工作日晚餐') || text.includes('家庭一周晚餐计划')) return [1, 0];
+      embedTexts: async (texts: string[]) => texts.map((text, index) => {
+        if (index === 0 || text.includes('家庭一周晚餐计划')) return [1, 0];
         return [0, 1];
       }),
     });
@@ -652,7 +660,7 @@ describe('confirmed Recall projection prompt injection', () => {
     } finally { unavailableAudit.mockRestore(); }
   });
 
-  describe('profile memory channel（2026-09-13 通道显式化）', () => {
+  describe('profile memory channel', () => {
     async function writeProfileMemory() {
       const paths = await import('../../../../src/main/paths');
       const file = paths.userProfileFile('user-a');
@@ -708,7 +716,7 @@ describe('confirmed Recall projection prompt injection', () => {
       expect(result.profileMemoryEntries!.every((entry) => /^onto-/.test(entry.id))).toBe(true);
     });
 
-    it('已进本轮投影的个人资产不再以画像镜像双注（2026-10-02 对话建议①跨通道去重）', async () => {
+    it('已进本轮投影的个人资产不再以画像镜像双注', async () => {
       const { assets, projection, promptInjection } = await modules();
       const now = new Date().toISOString();
       // 投影确认前就在库里：会进投影冻结集（旧版行为=同资产全文两块各一次，
@@ -930,7 +938,7 @@ describe('confirmed Recall projection prompt injection', () => {
       expect(result.promptBlock).toContain(asset.title);
       expect(result.promptBlock).not.toContain('Blocked asset');
       expect(result.assetIds).toEqual([asset.id]);
-      // M-3: 派发授权注入同样带边界条件（createAsset 带
+      // 派发授权注入同样带边界条件（createAsset 带
       // applicableWhen/forbiddenWhen）。
       expect(result.promptBlock).toContain('applicable_when');
       expect(result.promptBlock).toContain('forbidden_when');
@@ -946,7 +954,7 @@ describe('confirmed Recall projection prompt injection', () => {
 });
 
 /**
- * M-3 契约：适用/禁用条件必须随资产进入**每一条**注入路径。
+ * 注入契约：适用/禁用条件必须随资产进入**每一条**注入路径。
  *
  * `forbidden_when` 是硬安全约束。晋升 gate 校验它、「我的资产」详情页显示它，
  * 但在此之前三条注入路径的 record 里都没有——唯独模型拿不到。用户看到
@@ -955,7 +963,7 @@ describe('confirmed Recall projection prompt injection', () => {
  * 这组用例按**路径**而不是按函数组织：三条路径各自独立构造 record，任何一条
  * 漏掉都是一个真实的安全缺口，所以必须逐条钉死，不能只测其中一条。
  */
-describe('M-3 · 适用/禁用条件注入契约', () => {
+describe('适用/禁用条件注入契约', () => {
   it('carries forbidden_when into the confirmed-projection path', async () => {
     const asset = await createAsset();
     const { refs, projection, storage, layout, promptInjection } = await modules();
@@ -1024,7 +1032,7 @@ describe('M-3 · 适用/禁用条件注入契约', () => {
    */
   it('omits the fields entirely when an asset carries no conditions', async () => {
     const { candidates, promptInjection } = await modules();
-    // 用 personal：适用/禁用条件是 RuleAsset 的准入门槛（PRD 3.1），rule 类候选
+    // 用 personal：适用/禁用条件是 RuleAsset 的准入门槛，rule 类候选
     // 缺边界会被 `rule_boundary_required` 直接挡下，构造不出「无条件的规则」。
     // personal 天然没有这两个字段，正是要测的那种资产。
     const candidate = await createNightlyCandidateFixture('user-a', {

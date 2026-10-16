@@ -1,12 +1,5 @@
-// 对话内资产审批卡片（specs/008 US-406 / FR-014）：AI 自主提出的实质变化不直接生效，
-// 转成这张卡片由用户三选一（保存更新 / 稍后处理 / 拒绝；确认词根统一「保存」系，
-// 2026-09-28）。卡片是**提议不是锁**：没决定期间，这条资产照常可用。
-//
-// 单独成模块的原因：原先这套渲染挂在 conversation.js 里，只能用"源码里有这一行"的
-// 断言去测，于是 `uiTextarea` 少传 id（该组件强制要求 id、会抛错）没被任何测试挡住——
-// 真机上待处理卡片的可编辑区渲染不出来，异常又被 `.catch(() => {})` 吞掉，界面上只
-// 剩一个空标题（2026-09-25 子安复现）。抽出来之后 `cardHtml` / `collectEdits` / `resolve`
-// 都能被真实调用：共享组件用错会当场抛错，用户改完回传的载荷也能逐字段断言。
+// 对话内资产审批卡片：AI 提出的实质变化由用户决定保存、稍后处理或拒绝。
+// 提议不是锁；尚未决定时，资产仍按当前状态使用。
 (function initChatAssetApproval(root) {
   'use strict';
 
@@ -17,12 +10,17 @@
   // 超过这个长度的值先折叠：资产正文动辄上千字，整段铺在对话里没法看。
   const CLAMP_CHARS = 160;
   let anonymousSeq = 0;
+  const STATES = new Set(['pending', 'deferred', 'confirmed', 'rejected', 'superseded']);
+  const object = value => !!value && typeof value === 'object' && !Array.isArray(value);
 
-  // 行集与 main 白名单 SUBSTANTIAL_FIELDS 同源（statement/scope/applicableWhen/
-  // forbiddenWhen/tags）：title 走分级③由 AI 直接处理、sensitivity 已随敏感级
-  // 机制整体下线（2026-09-28），两者都到不了审批卡——别再给它们补标签行
-  // （P-r3-32：本表曾经的 title 行是白名单外死行，已删；main 四语同名的
-  // recall.asset_approval.field_sensitivity 死键一并收口）。
+  function canConfirm(payload, view) {
+    if (view?.readState !== 'ready' || view.state !== 'pending' || !object(view.proposed)) return false;
+    const keys = [...new Set([...(Array.isArray(payload.diff?.fields) ? payload.diff.fields : []), ...Object.keys(view.proposed)])];
+    return keys.length > 0 && keys.every(key => Object.hasOwn(FIELD_LABELS, key) && Object.hasOwn(view.proposed, key)
+      && (typeof view.proposed[key] === 'string' || (Array.isArray(view.proposed[key]) && view.proposed[key].every(item => typeof item === 'string'))));
+  }
+
+  // 字段与 main 的 SUBSTANTIAL_FIELDS 白名单一致；标题修改不走实质内容审批。
   const FIELD_LABELS = {
     statement: ['cognition.asset_version_diff_statement', '正文'],
     scope: ['cognition.asset_version_diff_scope', '适用范围'],
@@ -71,8 +69,7 @@
     return String(text || '').split(/[\n、；;]+/).map((part) => part.trim()).filter(Boolean);
   }
 
-  /** 可编辑字段：字符串与字符串数组。（`sensitivity` 枚举字段已随敏感级机制
-   *  整体删除，2026-09-28——自由文本改枚举本就没有意义。） */
+  /** 可编辑字段只接受字符串与字符串数组。 */
   function editableKeysOf(payload) {
     return Object.keys(payload || {}).filter((key) => {
       const value = payload[key];
@@ -85,7 +82,7 @@
     if (state === 'confirmed') return root.uiTag({ label: tr('recall.asset_approval.tag_confirmed', '已确认'), variant: 'success' });
     if (state === 'deferred') return root.uiTag({ label: tr('recall.asset_approval.tag_deferred', '已稍后处理'), variant: 'outline' });
     if (state === 'rejected') return root.uiTag({ label: tr('recall.asset_approval.tag_rejected', '已拒绝'), variant: 'outline' });
-    // 作废（P-r1-74 冲突即作废）：基于的版本已被顶掉，这条提议已关闭。
+    // 作废（冲突即作废）：基于的版本已被顶掉，这条提议已关闭。
     if (state === 'superseded') return root.uiTag({ label: tr('recall.asset_approval.tag_superseded', '已作废'), variant: 'outline' });
     return '';
   }
@@ -148,15 +145,14 @@
     return `<div class="chat-asset-approval-row" data-asset-approval-row="${escapeText(key)}"><div class="chat-asset-approval-row-head"><span class="chat-asset-approval-label">${escapeText(fieldLabel(key))}</span>${editTag}</div>${prevBlock}${control}</div>`;
   }
 
-  /** 卡片 HTML。纯字符串构造，所以能被测试逐段断言；共享组件用错（比如 uiTextarea
-   *  少给 id）会在这里当场抛错，而不是变成界面上的一块空白。 */
+  /** 使用共享组件构造卡片 HTML。 */
   function cardHtml(payload, view) {
     const source = payload || {};
     const state = String((view && view.state) || 'pending');
     const pending = state === 'pending';
     const diff = source.diff || {};
     // 字段值来自**提议记录**（view.proposed / view.current），不是消息载荷里的摘要：
-    // 摘要只有"字数 + 60 字前缀"，用户据此判断不了要不要批（2026-09-25 真机抓出）。
+    // 摘要只有"字数 + 60 字前缀"，用户据此判断不了要不要批。
     const proposed = (view && view.proposed && typeof view.proposed === 'object') ? view.proposed : null;
     const current = (view && view.current && typeof view.current === 'object') ? view.current : null;
     const uid = String(source.proposalId || `anonymous-${++anonymousSeq}`).replace(/[^A-Za-z0-9_-]/g, '')
@@ -168,14 +164,15 @@
     const baseline = String(source.baselineVersion || '').trim();
     const actions = pending
       ? `<div class="chat-asset-approval-actions">
-        ${root.uiButton({ label: tr('recall.asset_approval.confirm', '保存更新'), role: 'primary', size: 'sm', attrs: { 'data-asset-approval-action': 'confirm' } })}
+        ${root.uiButton({ label: tr('recall.asset_approval.confirm', '保存更新'), role: 'primary', size: 'sm', disabled: !canConfirm(source, view), attrs: { 'data-asset-approval-action': 'confirm' } })}
         ${root.uiButton({ label: tr('recall.asset_approval.defer', '稍后处理'), size: 'sm', attrs: { 'data-asset-approval-action': 'defer' } })}
         ${root.uiButton({ label: tr('recall.asset_approval.reject', '拒绝'), size: 'sm', attrs: { 'data-asset-approval-action': 'reject' } })}
       </div>`
       : `<div class="chat-asset-approval-state">${escapeText(stateText(state, view || {}))}</div>`;
-    const readNote = view && view.readFailed
-      ? `<div class="chat-asset-approval-read-failed">${escapeText(tr('recall.asset_approval.read_failed', '没能取到拟生效内容（刷新页面可重试；确认仍会按 AI 提议的原内容生效）'))}</div>`
-      : '';
+    const readNote = pending && !canConfirm(source, view)
+      ? `<div class="chat-asset-approval-read-failed" role="status">${escapeText(view?.readFailed
+        ? tr('recall.asset_approval.read_failed', '完整内容尚未读取，不能确认。请重试。')
+        : tr('recall.asset_approval.read_loading', '正在核对完整提议，读取完成后才能确认。'))}</div>${view?.readFailed ? root.uiButton({ label: tr('common.retry', '重试'), size: 'sm', attrs: { 'data-asset-approval-retry': '1' } }) : ''}` : '';
     const editHint = pending && editableKeys.length
       ? `<div class="chat-asset-approval-hint">${escapeText(tr('recall.asset_approval.edit_hint', '下面拟生效的内容可以直接改，改完再确认'))}</div>`
       : '';
@@ -244,6 +241,7 @@
     if (!card || !payload) return;
     const state = String((view && view.state) || 'pending');
     card.dataset.status = state;
+    card.dataset.readState = view?.readState || 'loading';
     card.className = `chat-asset-approval is-${state}`;
     card.dataset.proposalId = String(payload.proposalId || '');
     // 挂在元素上：确认时要把 textarea 的文本按原值类型切回数组/字符串。
@@ -254,16 +252,15 @@
     for (const button of card.querySelectorAll('[data-asset-approval-action]')) {
       button.addEventListener('click', () => { void resolve(card, payload, button.dataset.assetApprovalAction); });
     }
+    card.querySelector('[data-asset-approval-retry]')?.addEventListener('click', () => { void readCard(card, payload); });
+    for (const control of card.querySelectorAll('[data-asset-approval-field]')) {
+      control.addEventListener?.('input', () => { card._assetApprovalDirty = true; });
+    }
     bindClampToggles(card);
   }
 
-  /** 弹提示。uiAlert 是全局函数（有的文件从 window 取、有的靠全局作用域），两条都认；
-   *  两条都没有时**留痕**——一句要用户知道的失败提示不能就这么没了。
-   *  P-r2-37（2026-10-02）：弹框机制自身出错（uiAlert 同步 throw 或返回
-   *  rejected promise）不再升级为 unhandled rejection——「报告失败的机制」
-   *  自己炸掉会把处置流程二次打断（resolve 的 catch 里再弹一次提示，连环
-   *  抛错直接冒到 void 调用点）。失败只留痕（对齐本函数「留痕不吞错」
-   *  既有先例），弹不出就弹不出，不让它变成新的故障源。 */
+  /** 兼容全局和 window 上的 uiAlert。提示不可用或执行失败时记录警告，
+   *  不让提示本身的异常再次打断处置流程。 */
   function alertUser(message) {
     const body = String(message == null ? '' : message);
     let fn = null;
@@ -298,6 +295,8 @@
 
   async function resolve(card, payload, action, port) {
     if (!card || card.dataset.busy === '1') return;
+    if (!['confirm', 'defer', 'reject'].includes(action)) return;
+    if (action === 'confirm' && !canConfirm(payload, card._assetApprovalView)) return;
     const io = port || defaultPort();
     card.dataset.busy = '1';
     card.classList.add('is-busy');
@@ -313,7 +312,7 @@
       }
       const result = await io.invoke('recall.assets.approval.decide', body);
       if (!result || !result.ok) {
-        // 版本重检不一致（P-r1-74 冲突即作废重提）：主进程已把提议置为
+        // 版本重检不一致（冲突即作废重提）：主进程已把提议置为
         // superseded——基线版本永不刷新，confirm 对这条提议永久不可达，卡片
         // 落终态作废，AI 会基于最新内容重新提议（不再让用户「再决定」一条
         // 永远再冲突的死路提议）。
@@ -327,17 +326,8 @@
             { a: String(result.versionConflict.baselineVersion || ''), b: String(result.versionConflict.currentVersion || '') }));
           return;
         }
-        // P-r1-73（已处置回执三重缺陷）：主进程对「没能处置」的回执分四形：
-        // 已处置过 / 并发补偿回滚 / 版本冲突（前一分支）/ 资产不可达作废——
-        // 除版本冲突外都形如 {ok:false, state:<终态>, message:<如实说明>}。此前
-        // 这类回执落进下面的通用 throw 分支，三重缺陷：message 字段被丢（读的
-        // 是不存在的 result.error）、错误文案双层叠加（throw 已带「处置失败：」
-        // 前缀、catch 再包一层成「处置失败：处置失败：」）、卡片停在 pending
-        // 且按钮重新可点（同一条已处置提议可反复再点、反复报同一错）。
-        // 现按 versionConflict 分支同构处理：终态如实落卡（按钮随终态收掉），
-        // 提示只说一次——回执自带的 message 如实透传（并发回滚/资产撤回的
-        // 说明各有安全语义，不能一刀切成「已处置」），缺 message 时用
-        // already_decided 词条兜底。
+        // 已处置、并发回滚或资产不可达也可能返回 {ok:false, state, message}。
+        // 按真实终态关闭卡片，保留回执说明，避免把已结束的提议恢复为可操作。
         if (result && result.state && String(result.state) !== 'pending') {
           card.dataset.busy = '';
           card.classList.remove('is-busy');
@@ -349,7 +339,7 @@
             : tr('recall.asset_approval.already_decided', '这条提议已经处置过了。'));
           return;
         }
-        // P-r1-73（双层模板修复）：这里只抛裸 message（主进程回执的
+        // 这里只抛裸 message（主进程回执的
         // error/message 原文），「处置失败：」前缀由 catch 的 decide_failed
         // 模板统一包一次——旧实现两边各包一层，用户看到双重前缀。
         throw new Error(String((result && (result.error || result.message)) || 'decide failed'));
@@ -359,11 +349,14 @@
       card._assetApprovalPendingHydration = null;
       const state = String(result.state || (action === 'confirm' ? 'confirmed' : action === 'defer' ? 'deferred' : 'rejected'));
       render(card, payload, { state, ...(result.appliedVersion ? { appliedVersion: result.appliedVersion } : {}) });
+      void refreshVisible();
     } catch (error) {
       card.dataset.busy = '';
       card.classList.remove('is-busy');
       card.querySelectorAll('button').forEach((button) => { button.disabled = false; });
-      // P-r2-18（hydrate 暂存回放）：处置失败回到 pending 的卡片，若在 busy
+      const confirm = card.querySelector('[data-asset-approval-action="confirm"]');
+      if (confirm) confirm.disabled = !canConfirm(payload, card._assetApprovalView);
+      // 处置失败回到 pending 的卡片，若在 busy
       // 窗口内收到过 mount 发出的 hydrate 结果（read 通道真实状态与拟生效
       // 内容），此刻回放——否则卡片停在只有标题、无内容、无提示、按钮可点
       // 的骨架态（守卫丢弃+失败回滚两件事叠加出的空壳卡形态）。
@@ -388,47 +381,108 @@
     if (host.querySelector(selector)) return host.querySelector(selector);
     const card = root.document.createElement('div');
     host.appendChild(card);
-    render(card, payload, { state: 'pending' });
+    render(card, payload, { state: 'pending', readState: 'loading' });
+    void readCard(card, payload);
+    return card;
+  }
+
+  async function readCard(card, payload, request) {
+    const generation = (card._assetApprovalReadGeneration || 0) + 1;
+    card._assetApprovalReadGeneration = generation;
     // 历史重载时卡片消息是静态载荷：查一次真实状态与拟生效内容——不查状态则已处置的
     // 卡片会又变回"待处理"；不查内容则"可编辑"只是一句空话（载荷里只有摘要）。
-    root.cogseed.invoke('recall.assets.approval.read', { proposalId: payload.proposalId }).then((result) => {
+    try {
+      const result = await (request || root.cogseed.invoke('recall.assets.approval.read', { proposalId: payload.proposalId }));
+      if (generation !== card._assetApprovalReadGeneration || card.isConnected === false) return;
       const proposal = result && result.proposal ? result.proposal : null;
-      if (!proposal) return;
+      if (!proposal || proposal.id !== payload.proposalId || proposal.assetId !== payload.assetId
+        || String(proposal.baselineVersion) !== String(payload.baselineVersion) || !STATES.has(proposal.state)
+        || !object(proposal.payload)) throw new Error('invalid approval read response');
+      const view = { state: proposal.state, readState: 'ready', proposed: proposal.payload,
+        ...(object(proposal.beforeValues) ? { current: proposal.beforeValues } : {}) };
+      if (proposal.state === 'pending' && !canConfirm(payload, view)) throw new Error('incomplete approval fields');
       // 正忙或不待处理时不插手，免得把处置中/已处置的卡还原成可点
       // （与 conversation.js 的 kstar 复查卡同一口径）。
-      // P-r2-18（hydrate 暂存回放）：busy 窗口内到达的 hydrate 结果不丢弃而是
+      // busy 窗口内到达的 hydrate 结果不丢弃而是
       // 暂存——处置失败回 pending 时回放（见 resolve 的 catch），否则卡片停在
       // 只有标题、无内容、无提示、按钮可点的骨架态；处置成功落终态则暂存随
       // 之作废，终态卡永不回放。已终态（status!=='pending'）的卡无需暂存。
       if (card.dataset.busy === '1' && card.dataset.status === 'pending') {
-        card._assetApprovalPendingHydration = {
-          state: String(proposal.state || 'pending'),
-          ...(proposal.payload ? { proposed: proposal.payload } : {}),
-          ...(proposal.beforeValues ? { current: proposal.beforeValues } : {}),
-        };
+        card._assetApprovalPendingHydration = view;
         return;
       }
-      if (card.dataset.busy === '1' || card.dataset.status !== 'pending') return;
-      render(card, payload, {
-        state: String(proposal.state || 'pending'),
-        ...(proposal.payload ? { proposed: proposal.payload } : {}),
-        ...(proposal.beforeValues ? { current: proposal.beforeValues } : {}),
-      });
-    }).catch((error) => {
+      if (card.dataset.busy === '1' || !['pending', 'deferred'].includes(card.dataset.status)
+        || (card.dataset.status === 'deferred' && proposal.state === 'pending')) return;
+      // Unrelated collection writes must not overwrite the user's local edits.
+      if (proposal.state === 'pending' && card._assetApprovalDirty
+        && JSON.stringify(proposal.payload) === JSON.stringify(card._assetApprovalProposed)) return;
+      card._assetApprovalDirty = false;
+      render(card, payload, view);
+    } catch (error) {
       // 这里以前是 `.catch(() => {})`：一旦取内容失败，卡片就停在只有一个标题的骨架上，
       // 而**没有任何地方**留下线索。失败要说出来，界面也要说清楚还能做什么。
       log.warn('asset approval card hydrate failed', {
         proposalId: String(payload.proposalId || ''),
         error: (error && error.message) || String(error),
       });
-      if (card.dataset.busy === '1' || card.dataset.status !== 'pending') return;
-      render(card, payload, { state: 'pending', readFailed: true });
-    });
-    return card;
+      if (generation !== card._assetApprovalReadGeneration || card.isConnected === false
+        || card.dataset.busy === '1' || card.dataset.status !== 'pending') return;
+      render(card, payload, { state: 'pending', readState: 'failed', readFailed: true });
+    }
   }
+
+  let refreshRunning = null, refreshRequested = false;
+  function refreshVisible() {
+    refreshRequested = true;
+    if (refreshRunning) return refreshRunning;
+    refreshRunning = Promise.resolve().then(async () => {
+      do {
+        refreshRequested = false;
+        const groups = new Map();
+        for (const node of root.document?.querySelectorAll?.('[data-proposal-citation], .chat-asset-approval[data-proposal-id]') || []) {
+          const id = node.dataset.proposalCitation || node.dataset.proposalId;
+          if (!/^[A-Za-z0-9_-]{1,64}$/.test(id || '') || node.isConnected === false) continue;
+          if (!groups.has(id)) groups.set(id, []);
+          groups.get(id).push(node);
+        }
+        await Promise.all([...groups].map(async ([id, nodes]) => {
+          const request = root.cogseed.invoke('recall.assets.approval.read', { proposalId: id });
+          const cards = nodes.filter(node => node._assetApprovalPayload);
+          const updates = cards.map(node => readCard(node, node._assetApprovalPayload, request));
+          try {
+            const result = await request;
+            const proposal = result?.proposal;
+            if (!proposal || proposal.id !== id || !STATES.has(proposal.state)) throw new Error('invalid approval state');
+            for (const node of nodes.filter(node => node.dataset.proposalCitation)) {
+              if (node.isConnected === false) continue;
+              node.dataset.proposalState = proposal.state;
+              const label = node.querySelector('.ui-button__label');
+              if (label) label.textContent = `${tr('chat.proposal_citation_open', '查看变更提议')} · ${proposal.state === 'pending'
+                ? tr('recall.asset_approval.tag_pending', '待你定') : stateText(proposal.state, {})}`;
+            }
+          } catch (_) {
+            for (const node of nodes.filter(node => node.dataset.proposalCitation)) {
+              node.dataset.proposalState = 'unavailable';
+              const label = node.querySelector('.ui-button__label');
+              if (label) label.textContent = tr('chat.proposal_citation_unavailable', '变更提议 · 状态待核对');
+            }
+          }
+          await Promise.all(updates);
+        }));
+      } while (refreshRequested);
+    }).finally(() => { refreshRunning = null; });
+    return refreshRunning;
+  }
+  root.cogseed?.onPushEvent?.('cognition:changed', notice => {
+    if (notice?.collection === 'asset-approvals') void refreshVisible();
+  });
+  root.document?.addEventListener?.('visibilitychange', () => {
+    if (root.document.visibilityState !== 'hidden') void refreshVisible();
+  });
 
   const api = {
     mount,
+    refreshVisible,
     render,
     resolve,
     cardHtml,

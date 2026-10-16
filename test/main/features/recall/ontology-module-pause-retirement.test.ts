@@ -39,7 +39,7 @@ async function createModule(name: string, status?: 'paused') {
   return readOntologyDocument(USER);
 }
 
-describe('ontology module pause retirement (U03/C-02)', () => {
+describe('ontology module pause retirement', () => {
   it('rejects new module-level pause writes; per-record archive remains available', async () => {
     const { commitOntologyCommand, readOntologyDocument } = await import('../../../../src/main/features/cognition/ontology/service');
     await createModule('guard');

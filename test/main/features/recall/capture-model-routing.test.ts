@@ -1,13 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ buildRunner: vi.fn(), run: vi.fn(), thinking: 'auto' as 'auto' | 'high' }));
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const mocks = vi.hoisted(() => ({ buildRunner: vi.fn(), run: vi.fn(), cli: vi.fn(), detect: vi.fn(), budget: vi.fn(),
+  configured: true, thinking: 'auto' as 'auto' | 'high' }));
 vi.mock('../../../../src/main/model/core-agent/runner', () => ({ buildRunner: mocks.buildRunner }));
 vi.mock('../../../../src/main/features/config', () => ({ getThinkingLevel: () => mocks.thinking }));
+vi.mock('../../../../src/main/features/auth', () => ({ hasConfiguredModelForUser: () => ({ configured: mocks.configured }) }));
+vi.mock('../../../../src/main/features/local_agents/registry', () => ({ detectAll: mocks.detect }));
+vi.mock('../../../../src/main/features/local_agents/runner', () => ({ run: mocks.cli }));
+vi.mock('../../../../src/main/features/recall/capture-model-budget', () => ({ withCaptureModelBudget: mocks.budget }));
 import { runRecallCaptureModel } from '../../../../src/main/features/recall/capture-model-routing';
 const routes = [{ provider: 'openai', model: 'first' }, { provider: 'anthropic', model: 'second' }];
 const options = { sessionId: 'memory-test', systemPrompt: 'analyze', message: 'source', modelCandidates: routes };
 const success = { text: 'complete response', meta: { aborted: false } };
 beforeEach(() => {
   mocks.thinking = 'auto';
+  mocks.configured = true;
+  mocks.cli.mockReset().mockResolvedValue({ status: 'completed', output: 'CLI complete' });
+  mocks.detect.mockReset().mockResolvedValue([{ type: 'claude', available: true }]);
+  mocks.budget.mockReset().mockImplementation(async (_user, _budget, _chars, run) => run());
   mocks.run.mockReset().mockResolvedValue(success);
   mocks.buildRunner.mockReset().mockImplementation(async params => {
     const route = params.modelCandidates?.[0] || { provider: 'global', model: 'actual' };
@@ -15,6 +24,7 @@ beforeEach(() => {
     return { runner: { run: mocks.run } };
   });
 });
+afterEach(() => vi.unstubAllEnvs());
 describe('nightly capture model routing', () => {
   it.each(['503 service unavailable', 'connection reset after response began', 'All configured model candidates failed after network retries'])('discards exhausted/partial response and advances once: %s', async message => {
     mocks.run.mockResolvedValueOnce({ text: 'partial uncommitted response', meta: {
@@ -83,5 +93,21 @@ describe('nightly capture model routing', () => {
   it('does not opt other capture stages into JSON mode implicitly', async () => {
     await runRecallCaptureModel('user', options);
     expect(mocks.buildRunner.mock.calls[0][0]).not.toHaveProperty('responseFormat');
+  });
+  it('uses the same opt-in CLI and budget boundary for formation stages without changing generic empty-route callers', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
+    mocks.configured = false;
+    const budget = { jobId: 'capture-a', stage: 'grounding' as const };
+    expect((await runRecallCaptureModel('user', { ...options, modelCandidates: [], budget,
+      cliContext: { conversationId: 'conversation-a' } })).result.text).toBe('CLI complete');
+    expect(mocks.cli).toHaveBeenCalledWith(expect.objectContaining({ uid: 'user', cid: 'conversation-a', cli: 'claude', prompt: 'analyze\n\nsource' }));
+    expect(mocks.budget).toHaveBeenCalledWith('user', budget, 'analyze\n\nsource'.length, expect.any(Function));
+    expect(mocks.buildRunner).not.toHaveBeenCalled();
+    await runRecallCaptureModel('user', { ...options, modelCandidates: [] });
+    expect(mocks.buildRunner).toHaveBeenCalledTimes(1);
+  });
+  it('passes an explicit output ceiling without changing the default', async () => {
+    await runRecallCaptureModel('user', { ...options, maxOutputTokens: 2048 });
+    expect(mocks.buildRunner.mock.calls[0][0]).toMatchObject({ maxOutputTokens: 2048 });
   });
 });

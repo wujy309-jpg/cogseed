@@ -1,14 +1,5 @@
-/**
- * 回归（b2 执行单元 · P-r1-27）：候选 md 方言多行往返截断——拍平序列化。
- *
- * 病灶：serializeCandidatesMarkdown 把多行自由文本原样写进 `- 字段: 值` 单行
- * 方言；parseCandidatesMarkdown 只认行首 `- 字段:`——多行值往返后被静默截断，
- * 且形如 `- 类型: rule` 的续行会覆盖字段（kind 污染改变 confirm 落库分档），
- * confirm 再把截断值写库固化（甄别探针一字不差复现）。
- *
- * 修法（决策卡拍板）：序列化侧拍平（换行/制表折叠为单空格，有损归一），
- * 与 recall/personal-profile-sync.ts 的投影拍平同款先例。
- */
+/** 候选 Markdown 方言把换行与制表折叠为单空格，避免多行值被截断或
+ * 续行被识别为字段名；正文内容和原 kind 保留。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -45,7 +36,7 @@ async function loadCands() {
   return import('../../src/main/features/personal_ontology_candidates');
 }
 
-describe('P-r1-27 候选 md 方言拍平序列化（往返不再截断/污染）', () => {
+describe('候选 md 方言拍平序列化（往返不再截断/污染）', () => {
   it('多行 summary/memory_text 往返保全文（换行折叠为空格）', async () => {
     const cands = await loadCands();
     const multiLine = '第一行结论\n第二行证据\t带制表\n\n第三行补充';

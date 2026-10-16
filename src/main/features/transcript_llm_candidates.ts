@@ -1,15 +1,13 @@
 /**
- * transcript_llm_candidates — 模型纠错候选（方案 v0.2 §五 P2-1）
+ * transcript_llm_candidates — 模型纠错候选
  *
- * 为什么要有这一层：字面匹配救不了 `roadmap` 这种"音不近、形不近"的错写
- * （09-14 对照里它其实指 `SpeakerA`）。做法是 **让模型读正文找错写**：
+ * 字面匹配无法识别所有错写，因此让模型结合正文提出建议：
  *   - 把转写正文分段交给模型，让它自己指出"疑似写错 → 建议写法"；
- *   - 产出**只是候选**：只落进词表文件的候选区、只能被"标待核"，要变成扫描规则
- *     必须由人显式确认（见 transcript_glossary.adoptCandidate）。
+ *   - 产出只是当前材料的候选，应用前须人工勾选，不自动形成长期词表规则。
  *
  * 为什么不再"先猜疑似专名、只问那几处"：那条路要求先由 `detectSuspectEntities`
  * 用词形判据（含内部大写的拉丁串 / 4 字母以上全大写）挑出可疑位置，挑不出就
- * **根本不发请求**。实测后果是中文会议转写几乎必然 0 命中（`roadmap`、`coxyx`
+ * 根本不发请求。中文转写可能没有符合该词形的片段（`roadmap`、`coxyx`
  * 这类小写英文、以及 `SpeakerA`（正则少认一个尾随大写）都命中不了），面板只会
  * 显示「没有发现疑似专名，不需要问模型」——用户看到的是"模型给不出候选"，
  * 实际是模型**没被问到**。词形判据现在降级为**重点线索**（优先看这些位置），
@@ -91,13 +89,11 @@ export interface LlmCandidateResult {
   /** 没产出候选的原因（未配置模型 / 正文为空 / 所有段都失败）。 */
   skipped?: 'no_model' | 'empty_text' | 'model_failed';
   /**
-   * 【加法，specs/013 T004】本次复核消耗的 token 用量（各成功段累加）。
+   * 本次复核消耗的 token 用量（各成功段累加）。
    * 形态对齐 `RecallCaptureModelUsage`（`recall/capture-service.ts`）。
-   * 键名与量纲（2026-09-25 已核实）：`runner.run()` 的 `result.meta.usage`
+   * `runner.run()` 的 `result.meta.usage`
    * 为 `{ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?,
-   * totalTokens }`，单位 = token 个数、整轮累加口径
-   * （`src/core-agent/src/shared/types.ts:66-72`；主进程转发见
-   * `model/core-agent/event-mapper.ts:600-620`）。
+   * totalTokens }`，单位 = token 个数、整轮累加口径。
    * **测不到就缺失**：模型不可用 / 全段失败 / 注入方不回报时该字段
    * 整个不存在——不写 0 假装测到（cache 字段不在此口径内）。
    */
@@ -283,7 +279,7 @@ export function parseReviewResponse(
   return { candidates: sorted, rejected };
 }
 
-/** 单次调用的 token 用量（`runner.run()` 的 `result.meta.usage` 子集，T004）。 */
+/** 单次调用的 token 用量（`runner.run()` 的 `result.meta.usage` 子集）。 */
 export interface ReviewModelUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -309,8 +305,7 @@ export interface GenerateReviewOptions {
   hints?: SuspectHint[];
   /**
    * 测试注入：给定提示词返回模型文本。返回纯字符串 = 不带用量；
-   * 返回 `{ text, usage? }` = 连同该段 token 用量一起回报（T004，加法——
-   * 旧注入方返回字符串的写法完全兼容）。
+   * 返回 `{ text, usage? }` = 连同该段 token 用量一起回报；仍兼容只返回字符串的注入方。
    */
   runModel?: (
     input: { systemPrompt: string; message: string },
@@ -360,7 +355,7 @@ export async function generateReviewCandidates(
   const merged = new Map<string, LlmCandidate>();
   const rejectedAll: Array<{ wrong: string; correct: string; why: string }> = [];
   let failedChunks = 0;
-  // token 用量只累计**成功段**（T004）：失败段没有可信读数，缺失比编 0 诚实。
+  // token 用量只累计成功段：失败段没有可信读数，缺失比编 0 诚实。
   let usageTotal: ReviewModelUsage | undefined;
 
   for (const chunk of chunks) {
@@ -446,7 +441,7 @@ export async function generateReviewCandidates(
     failedChunks,
   };
   // 测不到就整个缺失：一次用量都没读到（模型不可用/全段失败/注入方不回报）
-  // 时不出 usage 字段，更不写 0 假装测到（specs/013 T004 验收点）。
+  // 时不出 usage 字段，更不写 0 假装测到。
   if (usageTotal) result.usage = usageTotal;
   if (base.chunksScanned === 0 && failedChunks > 0) result.skipped = 'model_failed';
   return result;

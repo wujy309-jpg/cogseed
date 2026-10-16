@@ -1,15 +1,4 @@
-/**
- * 探针 r1（边界测试员）→ r1 收尾整理为混合回归文件（记账员，2026-09-30）：
- * - 已修项回归（active）：F-r1-2 超长文本截断代理对（下方 emoji 用例）、
- *   空串/纯空白守卫（通用正向边界，锁定现状校验）。
- * - 待议项（it.skip，拍板后按结论反转断言或删除）：P-r1-2 流水升格绕过
- *   去重门、P-r1-3 applied 计数虚高、P-r1-4 控制字符不滤、P-r1-5 asOf
- *   无未来上界、P-r1-6 删除幂等口径不一致（见 round-1-甄别.md toPending）。
- *
- * 覆盖：asOf 未来年月、控制字符/零宽字符、删除幂等口径不一致、
- * 流水升格绕过同文本去重门、导入 applied 计数虚高、超长文本截断劈开代理对。
- * 风格对齐 test/main/features/po/po-store.test.ts（临时工作区 + resetModules）。
- */
+/** 本体写入边界：时间锚、控制字符、删除幂等、重复值、导入计数与 Unicode 安全截断。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -51,9 +40,8 @@ async function loadApi() {
 /** 孤立代理项检测（高代理后不跟低代理 / 低代理前无高代理）。 */
 const LONE_SURROGATE = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF]))|((?:[^\uD800-\uDBFF])|^)[\uDC00-\uDFFF]/;
 
-describe('regression r1 › po 写路径边界（待议项已 skip）', () => {
-  // 待议 P-r1-5：asOf 无未来上界校验（2099-12 被接受）。拍板前保持 skip；
-  // 断言锁定的是「现状接受」，拍板拒收后需反转为 ok:false。
+describe('po 写路径边界', () => {
+  // 未来时间锚的接受边界；该历史观察暂不作为目标回归启用。
   it.skip('asOf 未来年月 2099-12 被接受（1899-12 被拒）——时间锚无上界校验', async () => {
     const api = await loadApi();
     const g = await api.poCreateGroup(UID, '时间锚组');
@@ -67,8 +55,7 @@ describe('regression r1 › po 写路径边界（待议项已 skip）', () => {
     expect(past.ok).toBe(false);
   });
 
-  // 待议 P-r1-4：sanitizePoText 不滤控制字符/零宽字符。滤到什么程度（全 C0+DEL+
-  // 零宽 vs 只滤 NUL+行分隔符 vs 出口拦）需拍板；断言锁定的是「现状原样落盘」。
+  // 控制字符与零宽字符的存储及呈现边界，保留完整输入字节。
   it.skip('控制字符/零宽字符原样写入单一事实源 JSON 与渲染副本（sanitize 只压换行制表）', async () => {
     const api = await loadApi();
     const g = await api.poCreateGroup(UID, '脏字符组');
@@ -94,8 +81,7 @@ describe('regression r1 › po 写路径边界（待议项已 skip）', () => {
     expect(md).toContain(String.fromCharCode(0x2028));
   });
 
-  // 待议 P-r1-6：po 删除族幂等口径不一致（值/字段静默 ok vs 流水报错）。
-  // 统一幂等 vs 统一显式报错两方向互斥，拍板前 skip，断言锁定现状分歧本身。
+  // 比较值、字段与流水删除不存在对象时的幂等返回语义。
   it.skip('删除幂等口径不一致：值/字段删不存在 id 静默 ok，流水删除报 entry not found', async () => {
     const api = await loadApi();
     const g = await api.poCreateGroup(UID, '幂等组');
@@ -111,8 +97,7 @@ describe('regression r1 › po 写路径边界（待议项已 skip）', () => {
     expect(delEntry.error).toBe('entry not found');
   });
 
-  // 待议 P-r1-2：poPromoteEntry 绕过同文本去重门。显式拒 vs 幂等升格是产品
-  // 语义分叉，拍板前 skip；断言锁定的是「现状可落 3 条重复」。
+  // 比较流水升格和直接添加值对重复文本的处理。
   it.skip('流水升格绕过同文本去重门：同字段同文本可产生两条值（poAddValue 会拒）', async () => {
     const api = await loadApi();
     const g = await api.poCreateGroup(UID, '升格组');
@@ -136,8 +121,7 @@ describe('regression r1 › po 写路径边界（待议项已 skip）', () => {
     expect(values.length).toBe(3); // 1 条 addValue + 2 条 promote，去重门被绕过
   });
 
-  // 待议 P-r1-3：poImportApply 的 applied 计数虚高（重复项跳过仍计入）。
-  // A（applied=实际新增）vs B（另加 skipped 计数）需拍板；断言锁定现状虚高。
+  // 重复导入时，applied 计数应与实际写入效果可区分。
   it.skip('导入同一份导出两次：第二次零写入但 applied 计数照样虚高', async () => {
     const api = await loadApi();
     const g = await api.poCreateGroup(UID, '回灌组');
@@ -161,8 +145,7 @@ describe('regression r1 › po 写路径边界（待议项已 skip）', () => {
     expect(entries.length).toBe(1); // 落盘确实没重复——只是计数虚高
   });
 
-  // 2026-09-30 r1 修复反转（F-r1-2）：sanitizePoText 在 slice 截断后剔除末尾
-  // 孤立高代理，孤立代理不再落入 JSON 单一事实源。探针转为回归测试。
+  // 截断后的末尾孤立高代理不得进入持久化 JSON。
   it('超长 emoji 文本截断不再劈开代理对：末位无孤立高代理、磁盘无 \\ud83d 转义', async () => {
     const api = await loadApi();
     const g = await api.poCreateGroup(UID, '超长组');

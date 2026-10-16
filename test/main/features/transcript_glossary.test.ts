@@ -1,10 +1,11 @@
+// 身份、发言与文件名均为合成测试样例；时间仅用于解析和顺序断言。
 /**
  * transcript_glossary — 词表模型/归一化/风险分级/迁移/台账
  *
- * 重点覆盖（对齐 AGENTS「测业务不变量、恢复路径、文本陷阱」）：
+ * 使用合成身份与词条，覆盖以下数据契约：
  *   - 全角/大小写归一化后仍能 1:1 定位（否则扫描器 span 会整体错位）；
- *   - 高危短词分级（真实事故：`for`/`model`/`cloud` 这类合法英文词被全局替换）；
- *   - 纯数字变体 / 单姓敬称拒绝入册（真实事故：姓氏变体被当全局规则）；
+ *   - 高危短词分级（`for`/`model`/`cloud` 等合法英文词不能被静默全局替换）；
+ *   - 纯数字变体 / 单姓敬称拒绝入册（避免将局部名称变体当作全局规则）；
  *   - v1→v2 迁移（老方案文件不能被读成空表）；
  *   - uid 不匹配、JSON 损坏时的降级路径；
  *   - 台账只追加（改写台账 = 审计失效）。
@@ -149,7 +150,7 @@ describe('接受的三个动作（范围 / 忽略 / 加白）', () => {
     expect(setScope(uid, [a.id], { choice: 'task', scenarioTags: ['组会'] }).updated).toBe(1);
     expect(findEntry(uid, a.id)!.scope).toEqual({ docIds: [], scenarioTags: ['组会'], global: false });
 
-    // 高危词条拒绝全局：拒绝项如实回报，且原作用域不变（方案 §2.2 红线）
+    // 高危词条拒绝全局：拒绝项如实回报，且原作用域不变
     const before = findEntry(uid, risky.id)!.scope;
     const refused = setScope(uid, [a.id, risky.id], { choice: 'global' });
     expect(refused.updated).toBe(1);
@@ -210,10 +211,10 @@ describe('风险分级', () => {
   });
 
   it('单姓敬称 / 纯数字 / 显式 partial → high 或拒绝', () => {
-    expect(deriveRiskLevel({ wrong: '朱老师', correct: '朱明', action: 'replace' })).toBe('high');
+    expect(deriveRiskLevel({ wrong: '朱老师', correct: '示例甲', action: 'replace' })).toBe('high');
     expect(isSingleSurnameHonorific('王总')).toBe(true);
     expect(isSingleSurnameHonorific('王总工')).toBe(false);
-    expect(isPureDigits('20231080000006')).toBe(true);
+    expect(isPureDigits('00000000000042')).toBe(true);
     expect(isPureDigits('k42')).toBe(false);
     expect(deriveRiskLevel({ wrong: 'Coco', correct: 'Cogseed', action: 'replace', partial: true })).toBe('high');
   });
@@ -255,7 +256,7 @@ describe('CRUD 与不变量', () => {
   });
 
   it('纯数字变体拒绝入册', () => {
-    const res = upsertEntry(uid, { wrong: '20231080000006', correct: '某学号' });
+    const res = upsertEntry(uid, { wrong: '00000000000042', correct: '某学号' });
     expect(res.entry).toBeNull();
     expect(res.skippedReason).toBe('pure_digit_variant');
     expect(listEntries(uid)).toHaveLength(0);
@@ -361,7 +362,7 @@ describe('迁移与降级', () => {
 describe('导入导出', () => {
   it('导出默认剔除人名类；includePeople 才导出', () => {
     upsertEntry(uid, { wrong: 'coxy', correct: 'Cogseed' });
-    upsertEntry(uid, { wrong: '张旗康', correct: '张启康', kind: 'people' });
+    upsertEntry(uid, { wrong: '示例加', correct: '示例甲', kind: 'people' });
     expect(exportGlossary(uid).entries).toHaveLength(1);
     expect(exportGlossary(uid, { includePeople: true }).entries).toHaveLength(2);
   });
@@ -404,14 +405,14 @@ describe('entryId', () => {
 
 describe('历史会议纠错词条继续按作用域读取和应用', () => {
   it('原有 meeting_accept 词条只命中原文档，不改变词表', () => {
-    const original = upsertEntry(uid, { wrong: '付平', correct: '傅平', source: 'manual', docId: 'doc_1' }).entry!;
+    const original = upsertEntry(uid, { wrong: '例加', correct: '例甲', source: 'manual', docId: 'doc_1' }).entry!;
     const file = loadGlossary(uid);
     file.entries.find(entry => entry.id === original.id)!.source = 'meeting_accept';
     saveGlossary(uid, file);
     const before = JSON.stringify(loadGlossary(uid));
     const entries = listEntries(uid);
-    const text = '这个方案要付平老师确认。';
-    expect(scanText(text, entries, { docId: 'doc_1' }).candidates.map(c => [c.wrong, c.correct])).toEqual([['付平', '傅平']]);
+    const text = '这个方案要例加老师确认。';
+    expect(scanText(text, entries, { docId: 'doc_1' }).candidates.map(c => [c.wrong, c.correct])).toEqual([['例加', '例甲']]);
     expect(scanText(text, entries, { docId: 'doc_2' }).candidates).toEqual([]);
     expect(JSON.stringify(loadGlossary(uid))).toBe(before);
   });

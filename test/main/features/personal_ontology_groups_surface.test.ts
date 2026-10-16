@@ -3,20 +3,9 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-/**
- * 回归（round-1 F-r1-9）：resolveGroupContentAbsPathForUser 与
- * ontologyDocPathForUser 是全仓零引用的死导出，注释声称的 IPC 层 / chat-use
- * 消费方不存在，已删除。本测试锁住模块导出面：这两个名字不得回流；同时
- * 盯住同区块的兼容导出未被误删。
- *
- * 回归（P-r2-8，2026-10-02）：notifyGroupUpserted / notifyGroupDeleted 同为
- * 生产零消费的死导出（2026-09-29 重构后写路径在 po/store.ts 内部驱动渲染，
- * 外部 notify 无调用方），连同 store 侧唯一消费链 syncRenderForRelPath /
- * dropRenderForRelPath 一并删除；本测试原先把这两个死导出钉进「不得误删」
- * 契约（契约钉住待清理对象），现反转钉住「不得回流」。
- *
- * Mocks 同 personal_ontology_groups.test.ts：模块加载不拉 fastembed/sqlite-vec。
- */
+/** 个人本体模块不恢复已退役的路径解析和外部渲染通知导出。
+ * 仍有效的兼容导出保留，渲染副本由 owning 写路径维护。
+ * mock 避免模块加载时引入向量库依赖。 */
 
 let tmpDir: string;
 let prevWs: string | undefined;
@@ -44,7 +33,7 @@ afterEach(() => {
 });
 
 describe('personal_ontology_groups › 导出面', () => {
-  it('死导出 resolveGroupContentAbsPathForUser / ontologyDocPathForUser 不得回流（F-r1-9）', async () => {
+  it('死导出 resolveGroupContentAbsPathForUser / ontologyDocPathForUser 不得回流', async () => {
     const groups = await import('../../../src/main/features/personal_ontology_groups');
     const surface = Object.keys(groups) as string[];
     expect(surface).not.toContain('resolveGroupContentAbsPathForUser');
@@ -58,7 +47,7 @@ describe('personal_ontology_groups › 导出面', () => {
     expect(groups.ENTRY_SEPARATOR).toBeTypeOf('string');
   });
 
-  it('死导出 notifyGroupUpserted / notifyGroupDeleted 不得回流（P-r2-8）', async () => {
+  it('死导出 notifyGroupUpserted / notifyGroupDeleted 不得回流', async () => {
     const groups = await import('../../../src/main/features/personal_ontology_groups');
     const surface = Object.keys(groups) as string[];
     expect(surface).not.toContain('notifyGroupUpserted');

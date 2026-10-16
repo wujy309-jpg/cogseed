@@ -1,22 +1,4 @@
-/**
- * 红队探针 r2：review 决定账本文件名折叠串档——不同候选共用同一 jsonl，
- * 决定互相污染抑制判定（FR-EXT-07 拒绝/暂缓抑制失真）。
- *
- * 推演链：reviewDecisionLogPath（cognition/review-decision.ts:87-89）把
- * targetRef 的非 [A-Za-z0-9._-] 字符全部折叠成 `_`——`recall_candidate:abc`
- * 与 `recall_candidate/abc`（或 `x:y` 与 `x_y`）折叠后同名，共用一个
- * `<tail>.jsonl`。而 listReviewDecisions（:173-183）读文件**全量行**、只按
- * decision_id 去重，**不按 target_ref 过滤**；isCandidateSuppressed
- * （:249-257）取最后一条 decision_type 定抑制——B 候选的 accept 会解除
- * A 候选刚写入的 reject 抑制（或反向：B 的 reject 把 A 无辜压制）。
- * FR-EXT-07「同候选被 defer/reject 后无新 Evidence 不得重复提示」的判定
- * 基础被串档击穿。
- *
- * 2026-09-30 r2 收尾（记账员）：对应待议 P-r2-5（读回按 target_ref 过滤
- * 止血 / 文件名加短哈希去折叠根治 + 存量迁移 / 入口白名单叠加，组合策略
- * 待拍板）→ it.skip。断言锁定的是「现状串档」，拍板修复后反转。
- * 见 round-2-甄别.md toPending。
- */
+/** 不同 targetRef 的决定账本文件身份隔离与抑制状态独立性。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -42,7 +24,7 @@ async function loadRd() {
   return import('../../src/main/features/cognition/review-decision');
 }
 
-describe('probe r2 › 决定账本折叠串档（待议 P-r2-5，拍板前 skip）', () => {
+describe('决定账本折叠串档', () => {
   it.skip('targetRef 折叠同名 → B 的决定改写 A 的抑制状态', async () => {
     const rd = await loadRd();
     const targetA = 'recall_candidate:abc';

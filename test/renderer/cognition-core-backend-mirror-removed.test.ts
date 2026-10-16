@@ -3,18 +3,10 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * 渲染层不得再维护后端判定的镜像副本（2026-09-30 认知资产质检 R1）：
- *
- * core.js 曾把 fuseStatements / resolveMergeChainTarget /
- * isAutoCaptureEligible / dedupRefs 四个后端函数移植到前端并挂上
- * CogAssets 命名空间——迁移残留，全仓零消费，且常量口径随后端各自演进
- * 已经分叉（前端 isAutoCaptureEligible 还认 risk/capabilities，后端
- * candidate-service.ts:888 只看 status）。留着的风险是：哪天有人从
- * CogAssets 上取到它，拿的是一份过时的判定。删除后用这条门禁钉住：
- * 四个镜像名不得再出现在 CogAssets 上，也不得再定义回 core.js。
- *
- * 同时守住删除的边界：core.js 其余导出（api/store/文案与加载入口）
- * 必须原样健在，防止「删死代码删崩活代码」。
+ * 渲染层不维护后端内容判定的镜像。
+ * fuseStatements / resolveMergeChainTarget / isAutoCaptureEligible / dedupRefs
+ * 不得在 core.js 定义或导出，避免前后端判据独立演进后出现分歧。
+ * 其余 api、store、文案与加载入口仍须保留。
  */
 
 const globalScope = globalThis as unknown as Record<string, unknown>;
@@ -34,7 +26,7 @@ const coreSource = readFileSync(
   'utf8',
 );
 
-describe('渲染层不再暴露后端判定镜像（质检 R1）', () => {
+describe('渲染层不再暴露后端判定镜像', () => {
   it('CogAssets 上四个镜像导出已移除', () => {
     expect(NS.fuseStatements).toBeUndefined();
     expect(NS.resolveMergeChainTarget).toBeUndefined();

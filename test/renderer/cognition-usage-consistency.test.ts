@@ -1,5 +1,5 @@
 /**
- * US-602（2026-09-25 验收修复）渲染层：
+ * 资产使用记录渲染层：
  *  ① 列表「最近使用」与详情使用记录同口径——只算「真实使用」（白名单来自主进程），
  *     创建 / 版本 / 治理 / 撤销都不抬高最近使用；白名单缺失时 fail-closed；
  *  ② 「实际采用记录」只认有据回执：applied 才算采用，contradicted 单列，其余如实
@@ -129,7 +129,7 @@ describe('my cognition usage wording', () => {
   });
 });
 
-describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
+describe('列表与详情同口径', () => {
   it('新建或只改过版本：两处都显示"最近无使用记录"，版本事件不进使用记录', () => {
     const proofs = [
       { id: 'p-1', kind: 'asset_created', occurredAt: '2026-09-18T01:00:00.000Z', refs: { assetId: ASSET.id } },
@@ -242,7 +242,18 @@ describe('列表与详情同口径（US-602 AC1/AC2/AC4）', () => {
   });
 });
 
-describe('实际采用记录（US-602 AC5/AC6）', () => {
+describe('实际采用记录', () => {
+  it.each([
+    ['quote_not_found', '自报引文未匹配'], ['result_unavailable', '成果暂不可核查'], ['result_changed', '成果已变化'],
+  ])('失败自报 %s 只显示人话枚举与采用未确认，不暴露引文或路径', (reportFailure, label) => {
+    const html = detail({ adoptionReceipts: { assetId: ASSET.id, items: [{ id: 'failed-report', assetVersion: '3',
+      status: 'usage_unknown', observationMethod: 'agent_reported', reportFailure, outputExcerpt: 'PRIVATE-QUOTE', outputPath: '/private/hidden/result.txt' }] } });
+    expect(html).toContain(label);
+    expect(html).toContain('采用未确认');
+    expect(html).toContain('ui-tag');
+    expect(html).not.toContain('PRIVATE-QUOTE');
+    expect(html).not.toContain('/private/hidden');
+  });
   const appliedReceipt = {
     id: 'aur-1', assetVersion: '3', taskRunId: 'turn-1', status: 'applied',
     evidenceKind: 'artifact',

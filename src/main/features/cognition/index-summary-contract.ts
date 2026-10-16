@@ -1,15 +1,10 @@
 /**
- * P-r1-24 类型契约（回归护栏，零运行时行为）。
+ * 认知资产摘要导出的类型契约，零运行时行为。
  *
- * 认知域 index 有两个「资产摘要」形状：本域认知记忆档的旧行（stage/
- * reviewState/evidenceCount，现名 `CognitionMemoryAssetSummary`）与 `./types`
- * 的正式资产摘要（`CognitionAssetSummary`，带 type/maturity 列）。改名前
- * index 里的本地同名声明会静默遮蔽文末 `export * from './types'` 的星导出，
- * 消费方从 index 导入该名拿到旧形状且无任何提示。
- *
- * 本文件把「正式形状必须能从 index 导入」钉进 tsc 门禁：若同名本地声明
- * 回流遮蔽，下面两个索引访问立即产生编译错（Type 'maturity' cannot be
- * used to index...）。
+ * 认知记忆摘要 CognitionMemoryAssetSummary 与正式资产摘要
+ * CognitionAssetSummary 是不同类型，不能由 index 的同名本地声明遮蔽
+ * 正式摘要的星导出。下面的索引访问保证从 index 导入的正式摘要包含
+ * maturity 与 type；类型被遮蔽时，编译会报告缺失字段。
  */
 import type { CognitionAssetSummary } from './index';
 

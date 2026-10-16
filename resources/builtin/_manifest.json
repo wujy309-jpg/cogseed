@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "content_tree_sha256": "21943b8b48f4de62c906a74078bb7796c29d941b6fb00916e2ce7278e0daaeab",
+  "content_tree_sha256": "cc007cf932992e6f6f7cac9491a4cf74c1f764c10ad019dfcb047f6f6f0a08cb",
   "files": [
     {
       "path": "marketplace/agents/0fdb4da8a080/agent.json",
@@ -5018,6 +5018,76 @@
       "sha256": "414e585b3f71159d9aff5d9908d22cda8b27bf4a13bac50384e6851f92f3570b"
     },
     {
+      "path": "marketplace/skills/c09e11d17a01/_meta.json",
+      "bytes": 667,
+      "sha256": "8d849a1200732128faf7c07a73a2913acc112548350bc1d3cac7ee12914f7373"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/agents/openai.yaml",
+      "bytes": 623,
+      "sha256": "a1fe389cab0d61d16bd680158b61322fcda07df929f4fba99a5fe11f2e6108ba"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/evals/evals.json",
+      "bytes": 5558,
+      "sha256": "1b05f2983e980151e7e82b478c39166fb44f08c863502d67d49817b57dc0d54c"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/eval-cases.yaml",
+      "bytes": 411,
+      "sha256": "018ef9482244784baff0eab68b02144e9b919d7a012fa8e1b4b0f27f717a874e"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/failure-modes.md",
+      "bytes": 810,
+      "sha256": "2479c9eed972884cb26b8ca9d32cc20a343100be7109f2e01dd10581ed73edbc"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/governance-boundaries.md",
+      "bytes": 872,
+      "sha256": "ba81a26a3507a4833401295c4d4d9bdcc2b97176dadb7e8101f2e2089e6b5c94"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/input-contract.md",
+      "bytes": 1761,
+      "sha256": "b618242605f62a4f6cbe1bc2af9acc9afc273e8a6c8456fb9a01e02656fdd0b7"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/kstar-evolution.md",
+      "bytes": 394,
+      "sha256": "4091e229a7e035feb68e7c5497fabcd8e2648ebee5bf4cf8d2a4dd191077b153"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/ontology-mapping.md",
+      "bytes": 1724,
+      "sha256": "0d8d5b02209b007037191a3f4a65b7a9c05163e5c19933598de615986a20c488"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/output-contract.md",
+      "bytes": 770,
+      "sha256": "2f5d7d981ab1818d6a956905a4dce1ec07a435d3bb028f81b3859a3b8b7eb1b1"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/skill-spec.yaml",
+      "bytes": 852,
+      "sha256": "2f9e7fea6d822d555f8b3b5d7e4ac9453da2e552892c8786b3fe42d552445f6e"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/references/validation-contract.md",
+      "bytes": 1373,
+      "sha256": "8fb9164c50b12834f7c180342c1862c39bbf79cbe682f1ac731671e4852767aa"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/schemas.json",
+      "bytes": 2265,
+      "sha256": "7809b368c6c5302e7163ad545c8492aff5c631fc2448efa5970fb71f7f422781"
+    },
+    {
+      "path": "marketplace/skills/c09e11d17a01/SKILL.md",
+      "bytes": 7890,
+      "sha256": "cdea39da290b13472bcd49983d0a85b286f6d9c5d643b8d02ca481e9b4f95f50"
+    },
+    {
       "path": "marketplace/skills/c65fa3eae763/_meta.json",
       "bytes": 73,
       "sha256": "11fd4465787ae222e8f5f3eba2c3a2693d3c006e2a2bf76ed5de4a490bcd9f53"
@@ -7226,6 +7296,12 @@
         "name": "information-architecture",
         "version": "0.2.1-review.3",
         "updated_at": "2026-08-11T00:00:00"
+      },
+      {
+        "id": "c09e11d17a01",
+        "name": "cognition-editor",
+        "version": "1.1.0",
+        "updated_at": "2026-10-15T00:00:00+08:00"
       },
       {
         "id": "c65fa3eae763",

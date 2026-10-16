@@ -69,7 +69,7 @@ async function createAssetForTitleGate(uid: string, fixtureId: string, title: st
   }, { actor, reason: `review_decision:${decision.decision_id}` });
 }
 
-describe('标题闸门（设计 3.2）：createAbilityAsset 收口强制判定', () => {
+describe('标题闸门：createAbilityAsset 收口强制判定', () => {
   it('机器可判四项不合规的 title 一律拒绝', async () => {
     const { assets } = await modules();
     const base = (title: string, statement = STATEMENT) => createAssetForTitleGate('user-gate', 'aa-gate-reject-0000000001', title, statement, 'system')
@@ -82,8 +82,8 @@ describe('标题闸门（设计 3.2）：createAbilityAsset 收口强制判定',
 
   it('真实夜间候选的项目名标题直接创建，原正文保留且不额外调用模型改名', async () => {
     const uid = 'user-project-title';
-    const title = '星泽验收需宋遥签字';
-    const statement = '星泽项目每次验收需要宋遥最终签字。自2026年9月22日起，宋遥是星泽项目的验收负责人；后续准备星泽项目验收材料时应按此找宋遥签字。此规则仅适用于星泽项目，不能套用到其他项目。';
+    const title = '合成项目甲验收需合成签字人甲签字';
+    const statement = '合成项目甲每次验收需要合成签字人甲最终签字。自2026年9月22日起，合成签字人甲是合成项目甲的验收负责人；后续准备合成项目甲验收材料时应按此找合成签字人甲签字。此规则仅适用于合成项目甲，不能套用到其他项目。';
     const suggestion = await import('../../../../src/main/features/recall/asset-title-suggestion');
     const model = vi.spyOn(suggestion, 'suggestAbilityAssetTitle').mockRejectedValue(new Error('unnecessary title model call'));
     try {
@@ -108,7 +108,7 @@ describe('标题闸门（设计 3.2）：createAbilityAsset 收口强制判定',
   });
 });
 
-describe('标题闸门（设计 3.2）：updateAbilityAsset 收口强制判定', () => {
+describe('标题闸门：updateAbilityAsset 收口强制判定', () => {
   it('写入 title 时过判定；拒绝后不落盘（版本不动）', async () => {
     const { assets } = await modules();
     const asset = await seedAsset('user-upd', 'aa-gate-update-0000000001', '清单先行', STATEMENT);
@@ -150,7 +150,7 @@ describe('标题闸门（设计 3.2）：updateAbilityAsset 收口强制判定',
   });
 });
 
-describe('回滚/选版闸门（设计 3.2 拍板项 #2）：目标快照标题不合规时保留在用标题', () => {
+describe('回滚/选版闸门：目标快照标题不合规时保留在用标题', () => {
   const BAD_SNAPSHOT_TITLE = '历' + '史'.repeat(80); // 超过人工审阅标题80字契约
   const BAD_SNAPSHOT_STATEMENT = '历史遗留的正文首句标题，冻结在旧版本快照里。';
 
@@ -197,7 +197,7 @@ describe('回滚/选版闸门（设计 3.2 拍板项 #2）：目标快照标题�
   });
 });
 
-describe('同义归并闸门（设计 3.2 / 深探 F15）：source 在用标题不合规时不铺到 target', () => {
+describe('同义归并闸门：source 在用标题不合规时不铺到 target', () => {
   const SOURCE_STATEMENT = '源正文的第一句作为遗留坏标题被冻结在版本快照里。';
 
   /** target 合规在用；source 在用快照标题不合规且 updatedAt 更新（sourceNewer=true）。 */
@@ -249,7 +249,7 @@ describe('同义归并闸门（设计 3.2 / 深探 F15）：source 在用标题�
   });
 });
 
-describe('投影刷新（设计 3.3 硬前提 / 深探 F6）：update 改 title 必伴随 committed 投影版本刷新', () => {
+describe('投影刷新：update 改 title 必伴随 committed 投影版本刷新', () => {
   /** raw 写一条引用该资产的 confirmed 投影（冻结 v1）。 */
   async function seedCommittedProjection(uid: string, assetId: string) {
     const { store } = await modules();

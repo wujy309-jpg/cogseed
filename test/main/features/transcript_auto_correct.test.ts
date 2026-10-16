@@ -1,10 +1,11 @@
+// 身份、发言与文件名均为合成测试样例；时间仅用于解析和顺序断言。
 /**
  * transcript_auto_correct — 扫描护栏 + 替换引擎 + 偏移映射
  *
- * 护栏用例全部来自真实事故（AGENTS：测文本处理陷阱与恢复路径）：
+ * 用合成词条与文本覆盖边界、恢复路径和文本处理陷阱：
  *   - `coxy` 不得命中 `coxyx`（子串边界）；
  *   - `Cloud→Claude` 不得命中 `iCloud` 内部（词边界）；
- *   - 语境黑名单否决（`fuping` 在"扶贫办"附近不得替换成"傅平"）；
+ *   - 语境黑名单否决（`roleaa` 在"演练场"附近不得替换成"例甲"）；
  *   - 作用域之外的词条不得生效；
  *   - code/URL 内不替换；
  *   - 替换结果必须能由"原文 + 编辑集"逐字重建 → 结构上排除模型补写。
@@ -105,14 +106,14 @@ describe('护栏：边界 / 语境 / 作用域 / 保护区域', () => {
     expect(res.candidates[0].span.start).toBe('iCloud 和 '.length);
   });
 
-  it('语境黑名单否决：扶贫办 附近不把 fuping 换成 傅平', () => {
-    const fuping = entry({ wrong: 'fuping', correct: '傅平', kind: 'people', contextDeny: ['扶贫', '精准', '脱贫'] });
-    const denied = scanText('我们在扶贫办 fuping 那边对接', [fuping]);
+  it('语境黑名单否决：演练场 附近不把 roleaa 换成 例甲', () => {
+    const roleaa = entry({ wrong: 'roleaa', correct: '例甲', kind: 'people', contextDeny: ['演练', '模拟', '练习'] });
+    const denied = scanText('我们在演练场 roleaa 那边对接', [roleaa]);
     expect(denied.candidates).toHaveLength(0);
     expect(denied.denied[0].reason).toBe('context_denied');
-    expect(denied.denied[0].deniedBy).toBe('扶贫');
+    expect(denied.denied[0].deniedBy).toBe('演练');
 
-    const ok = scanText('今天 fuping 主持了例会', [fuping]);
+    const ok = scanText('今天 roleaa 主持了例会', [roleaa]);
     expect(ok.candidates).toHaveLength(1);
   });
 
@@ -236,7 +237,7 @@ describe('替换与偏移映射', () => {
   });
 });
 
-describe('语境白名单（加白，方案 §七）', () => {
+describe('语境白名单（加白）', () => {
   const entry_ = (over: Partial<GlossaryEntry> & { wrong: string; correct: string }) => entry(over);
 
   it('窗口内出现白名单词 → 整条静默（连待确认都不进），并留 denied 记录', () => {
@@ -305,8 +306,8 @@ describe('疑似专名探测（保守，宁漏勿噪；仅作模型重点线索�
   });
 });
 
-// ── 依据（refs，specs/013 T006/T007：每条字面候选带词条身份）──────────────
-describe('纠错候选的依据（FR-001"凭什么这么改"）', () => {
+// ── 依据（refs：每条字面候选带词条身份）──────────────
+describe('纠错候选的依据（"凭什么这么改"）', () => {
   it('每条字面候选 refs 至少 1 条，refs[0] = 词表来源（entryId/kind/freq 对应命中词条）', () => {
     const kstar = entry({ id: 'g_ks', wrong: 'K star', correct: 'KSTAR', boundary: 'substring', kind: 'term', freq: 7 });
     const res = scanText('现在用 coxy 上课，K star 也在用', [coxy, kstar]);
@@ -328,7 +329,7 @@ describe('纠错候选的依据（FR-001"凭什么这么改"）', () => {
     expect(res.candidates[0].refs![0]).toEqual({ source: 'glossary', entryId: 'g_filler', kind: 'filler', freq: 0 });
   });
 
-  it('依据完整率守卫：缺 refs 的候选不出行（宁少不多，SC-001）', () => {
+  it('依据完整率守卫：缺 refs 的候选不出行（宁少不多）', () => {
     const withRefs = { ...coxy, refs: [{ source: 'glossary', entryId: 'g_coxy', kind: 'product' as const, freq: 0 }] } as CorrectionCandidate;
     const withoutRefs = { entryRef: 'g_x', wrong: 'x', correct: 'y', action: 'replace' as const, confidence: 1, riskLevel: 'low' as const, context: '', span: { start: 0, end: 1 }, ignoredCount: 0, contextAllow: [] };
     const out = withBasisRefsGuard([withRefs, withoutRefs, { ...withoutRefs, refs: [] }]);
@@ -338,17 +339,17 @@ describe('纠错候选的依据（FR-001"凭什么这么改"）', () => {
   it('ScanOptions 加法的 speakers/topic 透传可用且不参与作用域（行为与不传一致）', () => {
     const scoped = entry({ wrong: '示例人物', correct: 'SpeakerA', scope: { docIds: ['doc-a'], scenarioTags: [], global: false }, boundary: 'substring' });
     const plain = scanText('示例人物 出现', [scoped], { docId: 'doc-a' });
-    const withSignals = scanText('示例人物 出现', [scoped], { docId: 'doc-a', speakers: ['张磊', 'Alex'], topic: '季度对齐' });
+    const withSignals = scanText('示例人物 出现', [scoped], { docId: 'doc-a', speakers: ['例乙', 'Demo'], topic: '季度对齐' });
     expect(withSignals.candidates).toEqual(plain.candidates);
     expect(withSignals.denied).toEqual(plain.denied);
     // 出作用域时传了 speakers/topic 仍然 out_of_scope（作用域语义不动）
-    const out = scanText('示例人物 出现', [scoped], { docId: 'doc-b', speakers: ['张磊'] });
+    const out = scanText('示例人物 出现', [scoped], { docId: 'doc-b', speakers: ['例乙'] });
     expect(out.candidates).toHaveLength(0);
     expect(out.denied[0].reason).toBe('out_of_scope');
   });
 });
 
-// ── 本体规范名进依据（specs/013 T008：只读并列，未命中不动）────────────────
+// ── 本体规范名进依据（只读并列，未命中不动）────────────────
 describe('attachOntologyRefs：本体规范名进纠错依据', () => {
   const candidate = (correct: string): CorrectionCandidate => ({
     entryRef: 'g_coxy', wrong: 'coxy', correct, action: 'replace', confidence: 1,
@@ -388,28 +389,26 @@ describe('attachOntologyRefs：本体规范名进纠错依据', () => {
   });
 });
 
-// ── 引例闸（specs/013 T018/T019：FR-011，唯一"修已知事故"的改动）──────────
+// ── 引例闸──────────
 //
-// 事故原文（2026-09-16 实测，transcript_rewrite.ts:54）：「一会儿叫 coxy」被改成
-// 「一会儿叫 Cogseed」——发言人在**讲拼写这件事本身**，其中的错写形态是例子，
-// 必须原样保留。人工清理版规则："引例保留、实际指称纠正"。
-describe('引例闸（T018）：窗口内命中 QUOTE_MARKERS → 不进候选，记 denied:quoted_example', () => {
-  // 事故句（marker「一会儿叫」在 coxy 的 20 字窗口内）
-  const ACCIDENT = '一会儿叫 coxy，一会儿叫别的';
+// 合成引例用于说明拼写，错写形态本身就是内容，应遵循"引例保留、实际指称纠正"。
+describe('引例闸：窗口内命中 QUOTE_MARKERS → 不进候选，记 denied:quoted_example', () => {
+  // 合成引例（marker「一会儿叫」在 coxy 的 20 字窗口内）
+  const QUOTED_SAMPLE = '一会儿叫 coxy，一会儿叫样例';
 
-  it('① 事故原句 + 词条 coxy→Cogseed ⇒ 零可勾选候选 + 一条 denied:quoted_example（带命中词）', () => {
-    const res = scanText(ACCIDENT, [coxy]);
+  it('① 合成引例 + 词条 coxy→Cogseed ⇒ 零可勾选候选 + 一条 denied:quoted_example（带命中词）', () => {
+    const res = scanText(QUOTED_SAMPLE, [coxy]);
     expect(res.candidates).toHaveLength(0);
     expect(res.denied).toHaveLength(1);
     expect(res.denied[0].reason).toBe('quoted_example');
     expect(res.denied[0].deniedBy).toBe('一会儿叫');
-    expect(res.denied[0].span.start).toBe(ACCIDENT.indexOf('coxy'));
+    expect(res.denied[0].span.start).toBe(QUOTED_SAMPLE.indexOf('coxy'));
   });
 
   it('② 同一段另有非引例真实错形 ⇒ 该处照常出候选（引例保护不误伤，各 span 各取窗口）', () => {
     // 注意窗口是 span 前后各 20 字：真实错形必须离任何 marker 都超过 20 字，
     // 中间用不含 marker 的过渡句隔开（这也正是"引例保护"的真实边界）。
-    const text = '一会儿叫 coxy，一会儿叫别的。'
+    const text = '一会儿叫 coxy，一会儿叫样例。'
       + '说完这个例子之后，课程继续往下推进了好几个小节的内容。'
       + '其中 coxy 被正常提到了两次。';
     const res = scanText(text, [coxy]);
@@ -447,9 +446,9 @@ describe('引例闸（T018）：窗口内命中 QUOTE_MARKERS → 不进候选�
   });
 });
 
-// ── 引例只读提示行（specs/013 T019：FR-011 可解释）──────────────────────────
-describe('quotedExampleRows（T019）：denied:quoted_example → 只读提示行', () => {
-  const text = '一会儿叫 coxy，一会儿叫别的';
+// ── 引例只读提示行（可解释）──────────────────────────
+describe('quotedExampleRows：denied:quoted_example → 只读提示行', () => {
+  const text = '一会儿叫 coxy，一会儿叫样例';
 
   it('该位置产出 disposition:"quoted_example" 的只读条目，能读出命中词与词条依据', () => {
     const res = scanText(text, [coxy]);
@@ -465,19 +464,19 @@ describe('quotedExampleRows（T019）：denied:quoted_example → 只读提示�
   });
 
   it('非引例 denied 不产只读行；词条不可考时不造依据、不出行（宁少不多）', () => {
-    const fuping = entry({ wrong: 'fuping', correct: '傅平', kind: 'people', contextDeny: ['扶贫'] });
-    const denied = scanText('我们在扶贫办 fuping 对接', [fuping]).denied;
-    expect(quotedExampleRows('我们在扶贫办 fuping 对接', denied, [fuping])).toHaveLength(0);
+    const roleaa = entry({ wrong: 'roleaa', correct: '例甲', kind: 'people', contextDeny: ['演练'] });
+    const denied = scanText('我们在演练场 roleaa 对接', [roleaa]).denied;
+    expect(quotedExampleRows('我们在演练场 roleaa 对接', denied, [roleaa])).toHaveLength(0);
     const res = scanText(text, [coxy]);
     expect(quotedExampleRows(text, res.denied, [])).toHaveLength(0);
   });
 });
 
-// ── apply 侧引例闸的共用判据（specs/013 T022）──────────────────────────────
-describe('isQuotedExampleSpan（T022）：scan 与 apply 用同一处判据', () => {
+// ── apply 侧引例闸的共用判据──────────────────────────────
+describe('isQuotedExampleSpan：scan 与 apply 用同一处判据', () => {
   it('引例位 → true；普通位 → false；窗口与扫描闸同一默认值（20）', () => {
-    const accident = '一会儿叫 coxy，一会儿叫别的';
-    expect(isQuotedExampleSpan(accident, { start: accident.indexOf('coxy'), end: accident.indexOf('coxy') + 4 })).toBe(true);
+    const quotedSample = '一会儿叫 coxy，一会儿叫样例';
+    expect(isQuotedExampleSpan(quotedSample, { start: quotedSample.indexOf('coxy'), end: quotedSample.indexOf('coxy') + 4 })).toBe(true);
     const plain = '现在用 coxy 上课';
     expect(isQuotedExampleSpan(plain, { start: plain.indexOf('coxy'), end: plain.indexOf('coxy') + 4 })).toBe(false);
   });

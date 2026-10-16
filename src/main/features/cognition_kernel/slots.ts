@@ -1,5 +1,5 @@
 /**
- * cognition_kernel/slots — 本体轴与资产轴槽位（438 P1/P2，2026-10-07）。
+ * cognition_kernel/slots — 本体轴与资产轴槽位。
  *
  * 任务包的三轴槽位里，personal 轴由 resolve.ts 取值；本文件补另外两轴：
  *   ontology 轴：按"对象名 × 关系名"绑定本体断言（同一权威读口 readOntologyView

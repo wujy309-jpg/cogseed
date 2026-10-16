@@ -1,28 +1,12 @@
 /**
- * transcript_ontology_bridge — 词表 ↔ 个人本体 / 长期记忆的最小接线（P1-a/b/c）
+ * transcript_ontology_bridge — 词表与个人本体、长期记忆的对齐。
  *
- * 设计依据：`教育插件/教育插件/1/本体×转写纠错-P1最小接线方案-2026-09-15.md`
+ * 将词条按概念归组；对已存在的本体概念挂 ontologyRef，只给出写法对齐或待补错形建议，
+ * 不从纠错记录产生认知候选。空来源返回空结果，不造占位数据。
  *
- * 保留概念归组、已有本体引用与词表对齐；不再产生认知候选：
- *   P1-a 归位：把词条按"概念"聚合，并在本体/记忆里能找到同名概念时挂上
- *             `ontologyRef`（**只改这一个字段**，不动 wrong/correct/风险）。
- *   P1-b 建议：本体/记忆里的规范名与词表现有写法不一致 → 给出"对齐建议"；
- *             词表里没有的规范名 → 给出"待补错形"建议（由用户补 wrong 形）。
- *
- * 来源范围（说清楚，别让人以为读的是"全部记忆"）：
- *   - 本体：`<uid>/cloud/contexts/.personal_ontology_groups/<groupId>.md` 的**字段值**
- *     （界面上叫「记忆分组」，可在记忆页新建；隐藏目录，不能依赖 KB 索引）；
- *   - 记忆：`<uid>/cloud/memory/{USER,MEMORY}.md`，即用户/共享两档长期记忆；
- *   - **不读** `cloud/memory/agents/<agent>/MEMORY.md`（agent 档）与角色模板画像：
- *     那两处是散文，整条折叠后永远匹配不上概念名，硬接只会造噪；等 P2 用 LLM
- *     抽术语时一并处理。
- *
- * 现实约束（2026-09-15 实测）：本机 dev profile 的 `.personal_ontology_groups/`
- * 台账为 `共 0 个分组`、`cloud/memory/MEMORY.md` 为 0 条（`USER.md` 不存在），
- * app 自己的 `personalOntology.groups.list` 也返回 `[]`。因此：
- *   - 本模块对空来源必须"什么都不做 + 如实返回 0"，不造占位数据；
- *   - 概念聚合**不依赖本体**：以 `correct` 的折叠值为概念键，今天就能把
- *     28 条散词条收成若干概念组（有本体时再补 `ontologyRef`）。
+ * 来源是正式本体、用户维护的本体分组字段值，以及 USER.md / MEMORY.md 中的长期记忆。
+ * 本体字段值可以提出待补错形；长期记忆仅用于已有概念对齐。
+ * taxonomy 的字段名与分组标题只作结构标签，不作为待补术语。
  */
 
 import * as fs from 'node:fs';
@@ -94,7 +78,7 @@ export interface SyncStats {
 }
 
 export interface SyncResult {
-  /** 归组统计（P1-a，始终可用于面板分组展示）。 */
+  /** 归组统计（可用于面板分组展示）。 */
   groups: ConceptGroup[];
   /** 实际写入 ontologyRef 的词条数（本体为空时为 0）。 */
   linked: number;
@@ -291,10 +275,10 @@ export function collectCanonicalNames(userId: string): CanonicalName[] {
 }
 
 /**
- * 在文件来源之外，补上 `recall/ontology-taxonomy`（方案 §五 P1-4 点名的两个来源之一）。
+ * 在文件来源之外，补上 `recall/ontology-taxonomy`。
  *
  * **只作为"结构标签"补进来**（seedKind=field/group）：字段名 `团队成员`、分组标题
- * `P1验证` 这类是结构，不是待纠正的术语——把它们当词条提议会导致一堆永远匹配
+ * `示例分组` 这类是结构，不是待纠正的术语——把它们当词条提议会导致一堆永远匹配
  * 不上的噪声。它们的作用是：分组文件还没填值时，词条仍能通过字段名挂上
  * `ontologyRef`（本体定位照旧可查）。
  * taxonomy 读失败（契约/文件问题）时安静降级为"没读到"，不影响同步其余部分。
@@ -349,7 +333,7 @@ export async function collectAllCanonicalNames(userId: string): Promise<{
 
 // ── 组合动作 ────────────────────────────────────────────────────────────
 
-/** P1-a：把能对上本体概念的词条挂上 ontologyRef（只改这一个字段）。 */
+/** 把能对上本体概念的词条挂上 ontologyRef（只改这一个字段）。 */
 export function linkOntologyRefs(userId: string, entries: GlossaryEntry[], names: CanonicalName[]): number {
   const refByConcept = new Map<string, { groupId: string; fieldId: string }>();
   for (const canonical of names) {

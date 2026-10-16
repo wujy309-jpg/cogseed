@@ -1,19 +1,5 @@
-/**
- * 退役注释与代码事实一致性（本遍循环 F-r2-3）。
- *
- * 背景：cognition.dashboard.read / candidates.list / candidates.decide 三通道
- * 2026-09-29 退役时，ipc/index.ts 里的说明注释写「dashboard/decideCognitionCandidate
- * 的服务文件随『通道退役大批』处置」——当时是待办口径。F-r1-2 已把服务文件删掉
- * （git status D dashboard.ts），注释没跟上，r2 复核员 grep 时被误导重复立案。
- * 注释是给后续审计者读的「账本」，账本与现实脱节就会持续制造重复劳动。
- *
- * 机械门禁（三面对齐）：
- *  1. 注释对已删对象必须是完成态表述（含「已随通道退役删除」），不得回漂到
- *     「随『通道退役大批』处置」的待办口径；
- *  2. 被声明删除的东西真的不在：decideCognitionCandidate 在 src+test 除该注释外
- *     零命中，features/cognition/dashboard.ts 文件不存在；
- *  3. 被声明保留的东西真的还在：listCognitionCandidates 仍有消费点。
- */
+/** 退役注释必须与源码事实一致：已删除的服务不再导出，仍保留的读取函数
+ * 与实际消费范围相符。完成态说明不得退回待处理表述。 */
 import { describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -44,12 +30,11 @@ function grepLines(dir: string, needle: string, exclude: string[] = []): string[
   return out;
 }
 
-describe('退役注释与代码事实一致（cognition 第 5 批通道）', () => {
+describe('退役注释与代码事实一致', () => {
   const indexSource = fs.readFileSync(path.join(root, IPC_INDEX_REL), 'utf8');
 
   it('注释是完成态：服务文件「已随通道退役删除」，不得回漂成待办口径', () => {
-    // 待办口径（随「通道退役大批」处置）在 F-r1-2 兑现后即为虚假陈述，
-    // 误导后续审计对已删对象重复立案。
+    // 服务已删除，说明不能继续写成待处理状态。
     expect(indexSource).toContain('dashboard/decideCognitionCandidate 的服务文件已随通道退役删除');
     expect(indexSource).not.toContain('随「通道退役大批」处置');
   });
@@ -66,8 +51,7 @@ describe('退役注释与代码事实一致（cognition 第 5 批通道）', () 
   });
 
   it('被声明保留的确实还在：listCognitionCandidates 定义仍在（仅测试直测的保留登记）', () => {
-    // 2026-10-01 死代码真删批（P-r1-1/P-r3-1）后，skill-summary 与
-    // assets-adapter 的两处运行时消费已删，ipc 注释口径改为「运行时零消费、
+    // skill-summary 与 assets-adapter 的运行时消费已删除，说明应为「运行时零消费、
     // 仅测试直测」。这里钉住：定义仍在（cognition.test.ts 直测其读取映射
     // 与排序），且 cognition 目录内对它的引用只出现在定义文件自身——
     // 若将来出现新消费点，注释账本必须同步改写。

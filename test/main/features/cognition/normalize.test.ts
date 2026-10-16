@@ -1,12 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
-/**
- * F-r1-6 回归：compactRefs / clampLimit / assetRef 三个导出是全仓零调用死代码
- * （clampLimit 还含 limit || fallback 吞 0 的语义坑），已删除。
- * 本测试钉住 normalize 的导出面，防止死代码被误加回或被误引用。
- * P-r1-17（2026-10-01 死代码真删批）：actionsForCandidate 的非本体源分支
- * 不可达、六个动作值零生产零消费，已退化为常量 personalOntologyCandidateActions。
- */
+/** normalize 只公开仍被消费的辅助函数；已退役的引用、分页与候选动作
+ * 死导出不得恢复。兼容回执引用方言与 Unicode 安全截断保持原契约。 */
 describe('cognition/normalize › 导出面', () => {
   it('恰好只导出四个在用符号，不含已删除的死代码', async () => {
     const mod = await import('../../../../src/main/features/cognition/normalize');
@@ -27,7 +22,7 @@ describe('cognition/normalize › 导出面', () => {
     expect(refMatchesAsset('note:other', 'note', 'n1')).toBe(false);
   });
 
-  it('P-r1-3：兼容回执侧持久化的四种 ref 方言，复用计数不再对真实回执恒 0', async () => {
+  it('兼容回执侧持久化的四种 ref 方言，复用计数不再对真实回执恒 0', async () => {
     const { refMatchesAsset } = await import('../../../../src/main/features/cognition/normalize');
     // asset-reference.ts parseAbilityAssetReference 支持的四种方言，
     // 与 inherited-cognition-prompt.ts assetRef() 的真实写入格式一致。
@@ -41,7 +36,7 @@ describe('cognition/normalize › 导出面', () => {
     expect(refMatchesAsset('asset:aa-x2@v3', 'domain_knowledge', 'aa-x1')).toBe(false);
   });
 
-  it('P-r1-3：endsWith 兜底收窄到 asset: scheme，任意前缀不再误配', async () => {
+  it('endsWith 兜底收窄到 asset: scheme，任意前缀不再误配', async () => {
     const { refMatchesAsset } = await import('../../../../src/main/features/cognition/normalize');
     // 旧实现对 ":<id>" 结尾一律成立——"evil:<id>" 这类未知 scheme 曾被计入复用。
     expect(refMatchesAsset('evil:aa-x1', 'domain_knowledge', 'aa-x1')).toBe(false);
@@ -53,7 +48,7 @@ describe('cognition/normalize › 导出面', () => {
     expect(refMatchesAsset('custom_skill:sk-1', 'skill', 'sk-1')).toBe(true);
   });
 
-  it('F-r4-2：80 码元截断不劈代理对——末位高代理砍 1 码元，UTF-8 往返无 U+FFFD', async () => {
+  it('80 码元截断不劈代理对——末位高代理砍 1 码元，UTF-8 往返无 U+FFFD', async () => {
     const { titleFromText } = await import('../../../../src/main/features/cognition/normalize');
     // 79 个 'a' + emoji（代理对占 2 码元）+ 尾巴：slice(0,80) 末码元恰是孤立高代理。
     const emoji = '\u{1F600}';

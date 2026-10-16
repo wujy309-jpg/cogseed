@@ -1,15 +1,14 @@
 /**
- * cognition_kernel/pool — 统一候选池（S3-c）。
+ * cognition_kernel/pool — 统一候选池。
  *
- * 池条目就是一个 status:'proposed' 的 Delta（D1③：一切写入皆 Delta，区别
- * 只在是否自动确认）。双收件箱（po 候选 markdown 方言 + recall 候选 10 态）
- * 在 S3-d/S4 由迁移与消费面重接收编进这一个池。
+ * 池条目就是一个 status:'proposed' 的 Delta，来源与原始候选引用随条目保留。
+ * 确认后经统一库写入口提交，候选状态与正式对象状态分别管理。
  *
  * 生命周期（池级，最小完备）：pending → confirmed / rejected / deferred
  *（deferred=「稍后再说」，到点回到 pending 由消费面拉起；对象级的
  * paused/merged 等状态属统一库对象，不属池）。
  *
- * 幂等与去重（两层，2026-10-02 钉死）：
+ * 幂等与去重分两层：
  *  · 槽位键（idempotencyKey）：同一槽位的重复提议，池内只留最新一条（旧
  *    pending 项被顶替进 rejected，注明 superseded）——这是槽位键的正确用途；
  *  · deltaId：confirm 后的精确重放由统一库 appliedDeltas 索引拦截。
@@ -52,7 +51,7 @@ export interface PoolItem {
   decidedAt?: string;
   /** 顶替关系：本条被哪个新条目顶掉（仅 superseded 的 rejected 项有）。 */
   supersededBy?: string;
-  /** 迁移映射：来自旧 po/recall 候选时的原 id（S3-d 用）。 */
+  /** 迁移映射：来自旧 po/recall 候选时的原 id。 */
   originalRef?: { kind: 'po_candidate' | 'recall_candidate'; id: string };
   /** 判定层给出的次候选（主候选在 delta.target.home；确认界面可「换主家」）。 */
   alternatives?: Array<{ home: string; confidence: number }>;
@@ -189,7 +188,7 @@ export async function submitToPool(
   options?: {
     sourceKind?: PoolSourceKind;
     originalRef?: PoolItem['originalRef'];
-    /** 判定层次候选（S3-d pipeline 传入）。 */
+    /** 判定层给出的次候选。 */
     alternatives?: Array<{ home: string; confidence: number }>;
   },
 ): Promise<SubmitOutcome> {
@@ -205,11 +204,10 @@ export async function submitToPool(
     if (corrupt) return { ok: false, error: `cognition pool corrupt; write refused (${corrupt.reason})` };
 
     const now = nowIso();
-    const itemId = `pi-${genId12()}`; // 随机段：条目数序号在裁剪后会重号（2026-10-02 回归轮修正）
+    const itemId = `pi-${genId12()}`; // 使用随机段，避免按条目数量编号在裁剪后重号。
     let supersededId: string | undefined;
     // 顶替只发生在「范围化槽位」（带 fieldName/objectId 的 set/update——新值
     // 换旧值是本意）；裸 add（无字段无对象）同家不同内容是不同提议，共存。
-    // 2026-10-02 修正：首版按槽位键一刀切，把同家两条不同内容的 add 错顶替。
     const scopedSlot = Boolean(delta.target.fieldName || delta.target.objectId);
     const surviving: PoolItem[] = [];
     for (const item of doc.items) {

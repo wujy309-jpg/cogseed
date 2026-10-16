@@ -1,7 +1,7 @@
 /**
  * Transcript correction panel for the knowledge-base source viewer.
  *
- * 用户旅程（方案 v0.2 · 宿主 A）：在知识库工作台打开一份逐字稿（.txt/.md）→
+ * 用户旅程：在知识库工作台打开一份逐字稿（.txt/.md）→
  * 点击工具栏「转写纠错」→ 扫描出候选（原词 → 建议）→ 逐条接受/忽略 →
  * 「生成清理版」拿到 run 快照与对照表 → 可预览、可另存到知识库、可回滚。
  *
@@ -13,8 +13,7 @@
  *     文件名加 i18n 后缀（zh `清理版`），永不覆盖原文件；内容级 sha1 去重命中时
  *     不重复写盘，并把已有文件的确切路径告知用户。
  *   - 另存成功后由本面板**显式**请求库视图重载目录树（`notifyLibraryChanged`）：
- *     库列表渲染的是进入视图时的树快照，不通知就会出现"另存了却找不到文件"
- *     （2026-09-16 真机反馈）。
+ *     库列表渲染的是进入视图时的树快照，不通知就会出现"另存了却找不到文件"。
  *
  * Renderer 约束：classic script（无 JSX/bundler）、可见文案走 i18n、
  * 控件用共享原语（uiButton/uiField/uiEmptyState/uiModal）、图标来自 icons.js。
@@ -52,7 +51,7 @@
     for (const candidate of Array.isArray(candidates) ? candidates : []) {
       const ref = String(candidate?.entryRef || '');
       if (!ref) continue;
-      // 【specs/013 T025】引例只读提示行（disposition:'quoted_example'）与同词条的
+      // 引例只读提示行（disposition:'quoted_example'）与同词条的
       // 真实候选**分开聚合**：同一个词条可能一处是引例、另一处是真错形，
       // 混在一起会让只读提示沾上「接受」按钮。
       const quoted = candidate.disposition === 'quoted_example';
@@ -68,14 +67,14 @@
         context: String(candidate.context || ''),
         // 来源：模型读正文给的建议（不是词表命中）。面板据此标来源、且永不预勾。
         fromModel: candidate.fromModel === true,
-        // 【specs/013 T024】通道与处置随行保留（缺省 exact/suggest，与主进程缺省语义一致）：
+        // 通道与处置随行保留（缺省 exact/suggest，与主进程缺省语义一致）：
         // exact=字面命中 / recall=多路召回 / model=模型复核；处置分级见 disposition。
         channel: candidate.channel === 'recall' || candidate.channel === 'model' ? candidate.channel : 'exact',
         disposition: quoted ? 'quoted_example' : (candidate.disposition === 'review' ? 'review' : 'suggest'),
-        // 【specs/013 T019/T025】引例行命中的标记词（QUOTE_MARKERS 之一），
-        // 供文案解释"为什么降级"（FR-011 可解释）。
+        // 引例行命中的标记词（QUOTE_MARKERS 之一），
+        // 供文案解释"为什么降级"。
         quotedBy: quoted ? String(candidate.quotedBy || '') : '',
-        // 【specs/013 T026】并列依据（词条/本体规范名/资产），跨 span 去重合并。
+        // 并列依据（词条/本体规范名/资产），跨 span 去重合并。
         refs: [],
         count: 0,
         spans: [],
@@ -107,10 +106,9 @@
   }
 
   /**
-   * 【specs/013 T026】无依据的候选不出行（前端也不兜底造依据）：
-   * 词表/召回/引例通道的候选必须带 refs（SC-001 依据完整率；主进程在构造点
-   * 已保证，这里挡旧载荷/脏数据）。模型建议（fromModel）的判断依据是它给的
-   * 理由（行徽标 title），不在 SC-001 口径内，保持既有行为。
+   * 无依据的候选不出行（前端也不兜底造依据）：
+   * 词表/召回/引例通道的候选必须带 refs。模型建议（fromModel）的判断依据是它给的
+   * 理由（行徽标 title），不要求词表引用。
    */
   function withBasisOnly(candidates) {
     return (Array.isArray(candidates) ? candidates : []).filter(
@@ -120,7 +118,7 @@
   }
 
   /**
-   * 【specs/013 T026】依据文案（纯函数）：词条（wrong→correct + freq）/
+   * 依据文案（纯函数）：词条（wrong→correct + freq）/
    * 本体规范名 / 资产（标题 + 冻结 vN）三类各一条展示路径。
    * 只读 refs 的已知字段——多余字段（哪怕带正文）也上不了屏。
    */
@@ -147,7 +145,7 @@
   }
 
   /**
-   * 【specs/013 T021/T023/T025】降级说明文案（纯函数）：只记"缺什么"，
+   * 降级说明文案（纯函数）：只记"缺什么"，
    * 不编造定位（无说话人/无场景标签/没跑过 run/空间库文档四码）。
    */
   function degradedNoteText(reason) {
@@ -166,7 +164,7 @@
     let pendingHigh = 0;
     let total = 0;
     for (const row of rows || []) {
-      // 【specs/013 T019/T025】引例只读行不是候选（主进程 stats.candidates 也不计它），
+      // 引例只读行不是候选（主进程 stats.candidates 也不计它），
       // 这里同口径剔除，避免"扫描完成 N 条"两边对不上。
       if (row.disposition === 'quoted_example') continue;
       total += 1;
@@ -188,7 +186,7 @@
    *
    * 为什么必须区分：忽略（降权）/ 加白 / 改写法都是**词表操作**，对 `model_*` 这种
    * 合成 id 主进程找不到条目、返回 0/null。面板此前不看回执，照样弹"已改为：X""已忽略"，
-   * 用户看到的就是"改写法点了没用"（2026-09-23 反馈）。所以这些动作**只给词表行**，
+   * 用户看到的就是"改写法点了没用"。所以这些动作**只给词表行**，
    * 同时所有词表写操作的返回值都要校验（双保险：万一以后又多了别的合成 id 来源）。
    */
   function isGlossaryRow(row) {
@@ -198,7 +196,7 @@
 
   /**
    * 分组：高危优先展示，其余归入可折叠组（视觉噪声主要来自低风险条目），
-   * 被忽略过的词条另外折叠到最后——这就是方案里的"忽略（降权）"，
+   * 被忽略过的词条另外折叠到最后——这就是"忽略（降权）"，
    * 不是删除：用户仍能展开看到并恢复。
    */
   function splitByRisk(rows) {
@@ -215,7 +213,7 @@
 
   /**
    * 默认勾选的行：低风险且未被忽略（被忽略的词条降权，不默认重来一遍）。
-   * 【specs/013 T024】预勾规则**只收不放**：
+   * 预勾规则**只收不放**：
    *   - 模型建议（fromModel）永不预勾——模型判断要逐条人工确认（既有规则）；
    *   - 召回通道（channel:'recall'）永不预勾——confidence 恒 < 1 的低置信来源；
    *   - disposition:'review'（必须逐条人工判断）与引例只读行（quoted_example）一律不预勾。
@@ -227,7 +225,7 @@
       // 一旦以后有人调整分级，模型判断就会被一键写进正文。
       .filter((row) => row.fromModel !== true)
       // 召回候选 confidence 恒 < 1（MAX_RECALL_CONFIDENCE = 0.99）：低置信来源
-      // 不进默认集，与「绝不自动替换」同一立场（specs/013 T024）。
+      // 不进默认集，与「绝不自动替换」同一立场。
       .filter((row) => row.channel !== 'recall')
       // review 须逐条人工判断；引例行是提示不是候选：都不预勾。
       .filter((row) => row.disposition !== 'review' && row.disposition !== 'quoted_example')
@@ -449,7 +447,7 @@
         kind: 'duplicate',
         existingDir: String(result.existingDir || ''),
         // 去重命中时把**已有文件的确切路径**带出来：只说"在某个目录下"用户还是
-        // 找不到（真机反馈），必须能给到一个可以直接去看的文件。
+        // 找不到，必须能给到一个可以直接去看的文件。
         existingPath: String(result.existingPath || ''),
       };
     }
@@ -463,8 +461,7 @@
    *
    * 库列表（`contexts.js` 的资源树 / `kb-workbench.js` 的个人知识库文件列表）
    * 渲染的是**各自进入视图时拍的树快照**，main 侧写盘只回一条全局 kb.events
-   * 状态事件。本面板另存的文件因此不会自己出现在列表里——真机反馈就是
-   * 「另存到知识库了却找不到文件」。写入方负责显式通知，才能立刻看到。
+   * 状态事件。写入方须显式通知列表刷新，才能及时展示另存的文件。
    * 用内联的 typeof 守卫而不是固定引用：两个模块可能未加载（其他视图下面板也可用）。
    */
   function notifyLibraryChanged() {
@@ -483,7 +480,7 @@
   }
 
   /**
-   * 清理版文件名（**不含目录**）：`9.15站会.txt` → `9.15站会-清理版.txt`。
+   * 清理版文件名（**不含目录**）：`示例站会.txt` → `示例站会-清理版.txt`。
    * 「另存到本地文件夹…」要的是纯文件名（目标目录由主进程定：原文所在的本地文件夹，
    * 或者用户在系统保存框里选的位置），所以这里只出 basename，不再拼库内相对目录。
    */
@@ -499,7 +496,7 @@
 
   /**
    * 清理版目标路径（库内）：**放在原文同一个目录**，名字尽量短且一眼可认。
-   *   例：`1/9.15站会.txt` → `1/9.15站会-清理版.txt`
+   *   例：`1/示例站会.txt` → `1/示例站会-清理版.txt`
    * 同日再次另存由 nextCandidateName 追加 -2/-3（不覆盖上一次产物）。
    * 后缀走 i18n（zh=清理版 / en=cleaned …），因为它是用户直接看到的文件名。
    */
@@ -560,7 +557,7 @@
       scanned: false,
       busy: false,
       apply: null,
-      // 【P-r2-31】apply 落地序号：runScan 出发时记一份、IPC 返回后比对——序号
+      // apply 落地序号：runScan 出发时记一份、IPC 返回后比对——序号
       // 变了说明扫描在途期间有 apply 落地，本 scan 即「迟到」，不再覆写状态。
       applySeq: 0,
       runId: '',
@@ -569,7 +566,7 @@
       collapsedOther: false,
       savedPath: '',
       /** 另存到**本地文件夹**的落点（绝对路径，主进程返回）。与 savedPath 是两个落点：
-       *  库内那份喂检索/问答，本机那份给用户自己用（2026-09-23 反馈：本地原文件夹里没有）。 */
+       *  库内那份喂检索/问答，本机那份给用户自己用。 */
       localSavedPath: '',
       // 本体/记忆接线（P1）：sync = 主进程 SyncResult 原样，呈现交给 syncSummary
       sync: null,
@@ -581,14 +578,14 @@
       notesText: '',
       headings: [],
       headingBusy: false,
-      // 【P-r1-68/P-r2-33】两个只读弹窗（对照/附记）的自有 busy：**只读不抢全局
+      // 两个只读弹窗（对照/附记）的自有 busy：**只读不抢全局
       // busy**（apply 进行中仍可打开对照——保留对照能力），且 finally 只清自己的
       // 标志，不再有「误清他方在途 busy、提前解锁放进第二个 apply」的窗口。
       // 形态对齐本文件 syncBusy/headingBusy 的分标志惯例。
       diffBusy: false,
       notesBusy: false,
-      // 接受的三个动作（方案 §七）：忽略 / 加白 / 改写法
-      // 同人段落合并（方案 §五 P1-2）：默认开——它是"清理版"能不能真正好用的关键
+      // 接受的三个动作：忽略 / 加白 / 改写法
+      // 同人段落合并：默认开——它是"清理版"能不能真正好用的关键
       mergeSpeaker: true,
       // 「扫描时同时让模型读一遍」：默认关——它会产生多次模型调用，成本必须由用户显式选择
       scanWithReview: false,
@@ -602,23 +599,23 @@
       denied: [],
       showDenied: false,
       actionError: '',
-      // 【specs/013 T025】降级说明（无说话人/无场景标签/没跑过 run/空间库文档）：
+      // 降级说明（无说话人/无场景标签/没跑过 run/空间库文档）：
       // 初始来自挂载方（查看器传空间库降级），扫描后并入 scan 返回的 degraded；
       // 去重后恰一处呈现，不重复叠加。
       degradedNotes: Array.isArray(ctx.degradedNotes) ? ctx.degradedNotes.map(String).filter(Boolean) : [],
-      // 【specs/013 T030】回执区：apply 返回的 receipts（结果+条目），空态恰一处。
+      // 回执区：apply 返回的 receipts（结果+条目），空态恰一处。
       receipts: [],
-      // 【specs/013 T028/T030】被明确拒绝的词条（apply 时随 rejectedIds 写回执账本，
+      // 被明确拒绝的词条（apply 时随 rejectedIds 写回执账本，
       // 此后该形态不再重复建议——主进程末条判定，可经 unreject 撤销）。
       rejected: new Set(),
-      // 「依据」展开区当前打开的行（specs/013 T026）。
+      // 「依据」展开区当前打开的行。
       basisOpen: '',
     };
 
     container.classList.add('kb-atc-host');
     container.innerHTML = panelHtml();
     const q = (selector) => container.querySelector(selector);
-    // 【P-r2-36】面板已销毁标志：词表管理器是挂在 document.body 上的独立弹窗，
+    // 面板已销毁标志：词表管理器是挂在 document.body 上的独立弹窗，
     // 生命周期比面板长——面板 destroy 后它仍可能在被编辑并回调 onChanged。销毁
     // 时置位，回调据此不再对已销毁面板发起重扫（IPC 照发、写孤儿状态的问题）。
     let disposed = false;
@@ -635,7 +632,7 @@
      *
      * `runScan()` 第一行是 `if (state.busy) return`（防止并发扫描），而加白/装规则包这类
      * 写操作都在 `state.busy = true` 区间里干活——直接 `await runScan()` 会被守卫拦掉，
-     * 表现为"提示说成功、列表却没变"（真机：装了口癖包看不见、加白后行还在）。
+     * 表现为"提示说成功、列表却没变"。
      * 这里显式先解除再扫；`finally` 里照旧再置一次 false（幂等）。
      */
     async function rescanAfterMutation() {
@@ -662,7 +659,7 @@
       const actions = q('[data-atc-head-actions]');
       if (title) title.textContent = t('kb.transcriptCorrect.title', '转写纠错');
       if (meta) {
-        // 规范 §四-3：文件名过长时只显示尾段，hover 才给完整路径（title 属性）
+        // 文件名过长时只显示尾段，hover 才给完整路径（title 属性）
         const full = ctx.displayPath || ctx.docId || '';
         const shortName = full.split(/[\\/]/).filter(Boolean).pop() || full;
         meta.textContent = t('kb.transcriptCorrect.meta', '{file} · {count} 字符', {
@@ -676,7 +673,7 @@
       }
       const hint = q('[data-atc-hint]');
       if (hint) {
-        // 规范 §四-1：标题下给一句"这个面板是干什么的"
+        // 标题下给一句"这个面板是干什么的"
         hint.textContent = t(
           'kb.transcriptCorrect.panel_hint',
           '只替换你词表里确认过的词；原文不会被改动，生成的清理版是另一份文件。',
@@ -697,7 +694,7 @@
           id: 'kb-atc-scan-review-' + panelId,
           // 可达标签是共享 uiCheckbox 的**硬性要求**（缺了直接抛 TypeError）。
           // 本面板 render() 是逐步 try/catch，抛错会把这一整段工具栏静默吞掉——
-          // 真机表现就是「同时让模型读一遍」和「词表」一起不见了。
+          // 必须满足标签契约，才能完整渲染工具栏。
           label: t('kb.transcriptCorrect.scan_with_review', '同时让模型读一遍'),
           checked: state.scanWithReview,
           disabled: state.busy,
@@ -760,7 +757,7 @@
         main.appendChild(src);
       }
 
-      // 【specs/013 T024】召回通道来源徽标：这条建议来自多路召回（confidence < 1），
+      // 召回通道来源徽标：这条建议来自多路召回（confidence < 1），
       // 不是词表字面命中，且**不会被预勾**。文案走四语，不上屏裸通道名（recall）。
       if (!row.fromModel && row.channel === 'recall') {
         const src = document.createElement('span');
@@ -769,7 +766,7 @@
         main.appendChild(src);
       }
 
-      // 【specs/013 T028/T030】被明确拒绝的行：徽标提示"会写回执且不再重复建议"。
+      // 被明确拒绝的行：徽标提示"会写回执且不再重复建议"。
       if (state.rejected.has(row.entryRef)) {
         const badge = document.createElement('span');
         badge.className = 'kb-atc__badge kb-atc__badge--rejected';
@@ -829,8 +826,8 @@
     }
 
     /**
-     * 【specs/013 T019/T025】引例只读提示行：这不是候选，是"为什么没给候选"的
-     * 可解释说明（FR-011）。**无勾选框、无接受/忽略按钮**——只有提示文案与
+     * 引例只读提示行：这不是候选，是"为什么没给候选"的
+     * 可解释说明。**无勾选框、无接受/忽略按钮**——只有提示文案与
      * 命中的标记词（quotedBy，QUOTE_MARKERS 之一），点击行为一律不给。
      */
     function quotedRowElement(row) {
@@ -863,8 +860,7 @@
      *     模型建议没有长期词表条目，不提供这类词表管理动作。
      *   - 「改写法」两种行都给：词表行走主进程改条目；模型建议行改的是"这条建议要替换成
      *     什么"，本地生效、勾选并生成清理版时按改后的写法替换。
-     *   - 「依据 / 拒绝 / 提出为候选」（specs/013）：依据与拒绝两种行都给；「提出为候选」
-     *     只给词表行（模型建议还不是词条，没有 captureKey 可沉淀）。
+     *   - 「依据 / 拒绝」两种行都提供，不从纠错面板提出长期认知候选。
      *   - 「重新审视」= 恢复：词表行走词表降权还原，模型建议行走"本次不采纳"的还原。
      */
     function rowMenuElement(row, isIgnoredRow) {
@@ -888,7 +884,7 @@
         attrs: { 'data-atc-rename-open': row.entryRef },
       }));
       parts.push(button({
-        // 【specs/013 T026】「依据」展开区：只读展示 refs（词条/本体规范名/资产），
+        // 「依据」展开区：只读展示 refs（词条/本体规范名/资产），
         // 纯前端，不发 IPC。
         label: t('kb.meetingRef.basis', '依据'),
         role: 'ghost',
@@ -897,7 +893,7 @@
         attrs: { 'data-atc-basis-open': row.entryRef },
       }));
       parts.push(button({
-        // 【specs/013 T028/T030】拒绝并记回执：按钮名复用既有三键之一
+        // 拒绝并记回执：按钮名复用既有三键之一
         // （recall.asset_approval.reject = 拒绝），不新造同义词。
         label: t('recall.asset_approval.reject', '拒绝'),
         role: 'ghost',
@@ -990,7 +986,7 @@
                 id: 'atc-rename-' + row.entryRef,
                 label: t('kb.transcriptCorrect.rename_correct', '改写法'),
                 control: { kind: 'input', placeholder: row.correct, value: row.correct },
-                // 两种行要讲清"改完什么时候生效"，否则用户以为点了没用（真机反馈）：
+                // 两种行要讲清"改完什么时候生效"，否则用户以为点了没用：
                 //   - 模型建议：改的是建议本身，勾选 + 生成清理版时才落地（并进词表）；
                 //   - 删除型条目：填上写法后行为从"删除"变成"替换为这个词"。
                 ...(row.fromModel === true
@@ -1020,7 +1016,7 @@
         wrap.appendChild(form);
       }
 
-      // 【specs/013 T026】「依据」展开区（只读）：词条（wrong→correct + freq）/
+      // 「依据」展开区（只读）：词条（wrong→correct + freq）/
       // 本体规范名 / 资产（标题 + 冻结 vN + id）三类各一条展示路径；上屏只含
       // id/版本/标题，不含资产正文；无依据时如实说"不可用"，**不兜底造依据**。
       if (state.basisOpen === row.entryRef) {
@@ -1108,7 +1104,7 @@
       }
 
       const { high, other, ignored } = splitByRisk(state.rows.filter((row) => row.disposition !== 'quoted_example'));
-      // 【specs/013 T025】引例只读提示行单独成区（无勾选框、无接受/忽略按钮），
+      // 引例只读提示行单独成区（无勾选框、无接受/忽略按钮），
       // 不与真实候选混排；排序沿用既有（高危 → 其余 → 已忽略 → 引例 → 被拦）。
       const quotedRows = state.rows.filter((row) => row.disposition === 'quoted_example');
       if (high.length) {
@@ -1137,7 +1133,7 @@
         for (const row of ignored) body.appendChild(rowElement(row));
       }
       if (quotedRows.length) {
-        // 【specs/013 T025】引例区：只读提示（为什么降级 + 命中的标记词），不是候选。
+        // 引例区：只读提示（为什么降级 + 命中的标记词），不是候选。
         body.appendChild(groupHeaderElement(
           t('kb.meetingRef.quoted_group', '引例 {count} 处（不建议替换）', { count: quotedRows.length }),
           'quoted',
@@ -1159,7 +1155,7 @@
               + (item.deniedBy ? `（${item.deniedBy}）` : '');
             body.appendChild(el);
           }
-          // 【F-r4-5】只渲染前 50 条时不装作"就这么多"：组头报的是全集数，剩余
+          // 只渲染前 50 条时不装作"就这么多"：组头报的是全集数，剩余
           // 如实标出（同 sync_chips_more 先例）。截断保留——denied 数组主进程
           // 无上限原样返回，长文档全量渲染会拖垮面板。
           const rest = state.denied.length - 50;
@@ -1218,24 +1214,15 @@
     /**
      * 场景标签行（词条作用域的前置数据）。
      *
-     * 「接受范围」三档（默认 / 仅本文档 / 仅本场景）已删除。它名不副实：
-     *   - 「默认」是纯 no-op（`applyScopeChoice` 首行就 return，不发 IPC 也不改盘）；
-     *   - 是否收窄实际取决于 `source === 'meeting_accept'`，而**全仓库没有任何调用方
-     *     发送过该 source**（面板发 'manual'、本体桥接发 'ontology_seed'），判断恒真
-     *     ⇒ 新词条一律是全局规则——正是 transcript_auto_correct 里记录的那起事故
-     *     （一次会议学到的 7 个姓氏变体被当全局规则，改了无关稿件的"某老师"）。
-     * 作用域改在**创建词条时**按当前文档/场景自动收窄，见
-     * `transcript_glossary.upsertEntry` 的兜底规则。
-     *
-     * 控件分工（全部走共享原语，不建页面局部变体）：
-     *   场景标签 = 标签行；拟标题 = 动作 → uiButton；合并同人发言 = 开关 → uiCheckbox。
-     * 点击委托仍按 data-atc-action 分派。
+     * 词条创建时，主进程按当前文档/场景收窄作用域，见
+     * `transcript_glossary.upsertEntry`；这里仅展示标题和同人发言合并动作。
+     * 控件全部走共享原语，点击委托按 data-atc-action 分派。
      */
     function renderScope() {
       const host = q('[data-atc-scope]');
       if (!host) return;
       // 有"未生效（out_of_scope）"条目时也要显示：很可能是这份稿子没标场景，
-      // 用户得能在这里补标签，而不是对着灰按钮猜（真机反馈）。
+      // 有拦截记录时也保留操作区，便于查看相关处理动作。
       if (!state.scanned || (state.rows.length === 0 && state.denied.length === 0)) { host.textContent = ''; return; }
       host.innerHTML = [
         button({
@@ -1270,7 +1257,7 @@
         icon: 'check-circle',
         role: 'primary',
         size: 'sm',
-        // 【specs/013 T030】有拒绝动作（要写回执）也可生成，不要求同时有接受项。
+        // 有拒绝动作（要写回执）也可生成，不要求同时有接受项。
         disabled: state.busy || (state.accepted.size === 0 && state.rejected.size === 0),
         loading: state.busy,
         attrs: { 'data-atc-action': 'apply' },
@@ -1307,7 +1294,7 @@
         buttons.push(button({
           label: t('kb.transcriptCorrect.notes', '清理附记'),
           icon: 'clipboard-list',
-          // 低频操作 → 文字按钮（规范 §三-1）
+          // 低频操作 → 文字按钮
           role: 'ghost',
           size: 'sm',
           disabled: !state.runId || state.notesBusy,
@@ -1321,7 +1308,7 @@
 
     /**
      * 本体分组/长期记忆同步块（P1）：概念归组 + 与规范名对齐。
-     * 文案口径：用户实际看到的措辞以 `zh.json` 为准（本批实测是「本体分组」），
+     * 文案口径：用户实际看到的措辞以 `zh.json` 为准，
      * 代码回退跟着改成同一措辞 —— 否则缺键时会冒出第二套说法；并写明
      * 长期记忆是散文、只在词表已有该术语时用于对齐——不能让人以为
      * 记忆这半边会源源不断产出建议。
@@ -1356,7 +1343,7 @@
         role: 'ghost',
         size: 'sm',
         loading: state.syncBusy,
-        // P-r2-32（按钮补看 busy）：采纳/补错形动作的收尾会嵌套调
+        // 采纳/补错形动作的收尾会嵌套调
         // runSyncOntology——若动作在途时这里放用户点出第二个在途 syncBusy，
         // 嵌套调用会被 runSyncOntology 的防重入守卫静默吞掉（采纳成功但
         // 建议列表不刷新）。动作与同步互斥后方可点，嵌套调用永远落在
@@ -1503,7 +1490,7 @@
               icon: 'check-circle',
               role: 'secondary',
               size: 'sm',
-              // P-r2-32（按钮补看 busy 的对称半边）：补错形收尾同样嵌套调
+              // 补错形收尾同样嵌套调
               // runSyncOntology——syncBusy 在途时放行会在收尾被守卫吞掉，
               // 对齐上方「采用」「补错形」入口的 busy||syncBusy 双看惯例。
               disabled: state.busy || state.syncBusy,
@@ -1577,9 +1564,9 @@
     }
 
     /**
-     * 【specs/013 T021/T023/T025】面板顶部降级说明：无说话人 / 无场景标签 /
+     * 面板顶部降级说明：无说话人 / 无场景标签 /
      * 没跑过 run / 空间库文档四码，**恰一处**呈现（单一容器、按原因去重），
-     * 不随行重复叠加。文案只说"缺什么"，不编造定位（FR-012/FR-015 如实降级）。
+     * 不随行重复叠加。文案只说"缺什么"，不编造定位。
      */
     function renderDegraded() {
       const host = q('[data-atc-degraded]');
@@ -1597,7 +1584,7 @@
     }
 
     /**
-     * 【specs/013 T030】回执区：apply 返回的 receipts（拒绝动作的账本凭据）。
+     * 回执区：apply 返回的 receipts（拒绝动作的账本凭据）。
      * 只上屏 结果（决定类型）/ 对应会议 / 条目 / 依据标识 / 回执 id——不含正文；
      * 空态恰一处（uiEmptyState）。
      */
@@ -1645,8 +1632,7 @@
 
     function render() {
       // 逐段尝试渲染：某个共享原语抛错时，不得连带把扫描/替换流程卡死
-      // （真实事故：uiField 缺 id 抛错 → render() 在 runScan 的 try 之外抛出，
-      //  扫描永远停在"正在扫描…"）。
+      // 单步失败只记录该步骤，不阻止其余区域更新。
       for (const step of [renderHead, renderBody, renderDegraded, renderSummary, renderApplyInfo, renderScope, renderActions, renderSync, renderAddForm, renderReceipts]) {
         try {
           step();
@@ -1664,7 +1650,7 @@
       setStatus(t('kb.transcriptCorrect.scanning', '正在扫描…'), 'loading');
       render();
       try {
-        // 【P-r2-31 写前比对】出发时记下 apply 落地序号；IPC 返回后若序号已变，
+        // 出发时记下 apply 落地序号；IPC 返回后若序号已变，
         // 说明扫描在途期间有 apply 落地——本 scan 即「迟到」，下面整段状态写入
         // （rows/accepted/apply=null/cleanedText=''）会把用户刚拿到的清理版和
         // 勾选一起冲掉，这里直接丢弃本轮扫描结果兜底（写操作补锁后正常路径已
@@ -1674,28 +1660,28 @@
           text: ctx.text,
           docId: ctx.docId,
           // 口癖规则包装进词表后是 action=delete 词条：不带这个开关它们不会出现，
-          // 用户会以为"装了规则包却没反应"（真机踩过）。
+          // 用户会以为"装了规则包却没反应"。
           includeDelete: true,
           // 「同时让模型读一遍」：模型建议会**并进同一个候选列表**（不是另开一套面板）
           includeReview: state.scanWithReview === true,
-          // 【specs/013 T015/T024】召回通道并入同一候选清单（channel:'recall'，
+          // 召回通道并入同一候选清单（channel:'recall'，
           // confidence 恒 < 1，面板永不预勾）。召回是本地字符串匹配、无模型成本，
           // 与 includeReview 的"不点不花钱"不同，恒开。
           includeRecall: true,
           // 「仅本场景」的场景标签能力已随主线 #307 的界面收敛整体删除：
           // 渲染层不再产生标签，故这里也不再向 scan 传标签字段。
         });
-        // 【P-r2-31 写前比对】迟到判定：序号变了 = 扫描在途期间有 apply 落地，
+        // 迟到判定：序号变了 = 扫描在途期间有 apply 落地，
         // 丢弃本轮结果（宁可丢一次扫描，不吃掉已生成的清理版）。
         if (state.applySeq !== applySeqAtStart) {
           log?.warn('late transcript scan dropped: apply landed while scanning', { docId: ctx.docId });
           return;
         }
-        // 【specs/013 T026】无依据的候选不出行（前端不兜底造依据）：词表/召回/
+        // 无依据的候选不出行（前端不兜底造依据）：词表/召回/
         // 引例通道缺 refs 的载荷（旧数据/脏数据）在这里挡下；模型建议例外（其
         // 判断依据是模型给的理由，行徽标 title 可见）。
         state.rows = groupCandidates(withBasisOnly(result?.candidates));
-        // 引例已作为 disposition:'quoted_example' 的只读行进入候选清单（T019），
+        // 引例已作为 disposition:'quoted_example' 的只读行进入候选清单，
         // 被拦列表里不再重复展示它们（重复叠加 + 会露出未翻译的 reason 码）。
         state.denied = (Array.isArray(result?.denied) ? result.denied : [])
           .filter((item) => item?.reason !== 'quoted_example');
@@ -1706,18 +1692,18 @@
         state.apply = null;
         state.cleanedText = '';
         state.collapsedOther = false;
-        // 埋点起点：从"扫描完成"到"生成清理版"的秒数（方案 §8.2 可选埋点，本地）
+        // 埋点起点：从"扫描完成"到"生成清理版"的秒数
         state.scanDoneAt = Date.now();
         const stats = summarizeRows(state.rows, state.accepted);
         state.truncated = Boolean(result?.stats?.truncated);
         state.review = result?.review ?? null;
-        // 【specs/013 T021/T025】降级说明：挂载方带来的（如空间库文档）与 scan
+        // 降级说明：挂载方带来的（如空间库文档）与 scan
         // 返回的 degraded 合并去重，面板顶部恰一处呈现。
         const ctxNotes = Array.isArray(ctx.degradedNotes) ? ctx.degradedNotes.map(String) : [];
         const scanNotes = Array.isArray(result?.degraded) ? result.degraded.map(String) : [];
         state.degradedNotes = [...new Set([...ctxNotes, ...scanNotes])];
         const reviewNote = reviewSummary(state.review);
-        // 【specs/013 T029】被拒抑制滤掉的行数如实说：候选变少要有解释。
+        // 被拒抑制滤掉的行数如实说：候选变少要有解释。
         const suppressed = Number(result?.stats?.suppressed || 0);
         const suppressedNote = suppressed > 0
           ? t('kb.meetingRef.suppressed_note', '{count} 条此前已拒绝的形态未再出现（可经回执撤销）', { count: suppressed })
@@ -1731,10 +1717,10 @@
         log?.warn('transcript scan failed', { error: error?.message || String(error) });
         state.scanned = true;
         state.rows = [];
-        // 【F-r1-20】与成功分支对称地清掉上一轮扫描产物（accepted/apply/cleanedText）：
+        // 与成功分支对称地清掉上一轮扫描产物（accepted/apply/cleanedText）：
         // 否则「扫描失败」空态下，上一轮预勾的 accepted 残留仍会放行 apply（守卫只看
         // accepted/rejected 是否为空），旧清理版的「对照原文/另存」按钮也与失败提示
-        // 同屏。rejected 不清——它是跨轮回执账本（T030 有意设计）。
+        // 同屏。rejected 不清——它是跨轮回执账本。
         state.accepted = new Set();
         state.apply = null;
         state.cleanedText = '';
@@ -1747,7 +1733,7 @@
     }
 
     async function runApply() {
-      // 【specs/013 T030】被拒词条也要能走 apply（写回执账本），不要求同时有接受项。
+      // 被拒词条也要能走 apply（写回执账本），不要求同时有接受项。
       if (state.busy || (state.accepted.size === 0 && state.rejected.size === 0)) return;
       state.busy = true;
       setStatus(t('kb.transcriptCorrect.applying', '正在生成…'), 'loading');
@@ -1762,8 +1748,8 @@
           // 附记要能说清"这份清理版是从哪份转写来的"
           ...(ctx.displayPath ? { sourcePath: ctx.displayPath } : {}),
           acceptedIds: [...state.accepted],
-          // 【specs/013 T028/T030】明确拒绝的词条：apply 时随 rejectedIds 写既有
-          // 回执账本（此后该形态不再重复建议，T029；撤销走 unreject，T032）。
+          // 明确拒绝的词条：apply 时随 rejectedIds 写既有
+          // 回执账本（此后该形态不再重复建议；撤销走 unreject）。
           ...(state.rejected.size ? { rejectedIds: [...state.rejected] } : {}),
           // 模型建议是**本轮的临时候选**（没有词表条目），apply 时得跟着请求走；
           // 只传被勾选的那些——主进程还会按 span 逐字校验。
@@ -1771,18 +1757,18 @@
             ? { models: checkedModelCandidates(state.rows, state.accepted) }
             : {}),
         });
-        // 【F-r1-20】生成成功即抹掉上一轮的「扫描失败」提示：rejected-only 的
-        // apply（T030）在扫描失败后仍可走，成功后失败空态不得与清理版结果同屏。
+        // 生成成功即抹掉上一轮的「扫描失败」提示：rejected-only 的
+        // apply 在扫描失败后仍可走，成功后失败空态不得与清理版结果同屏。
         state.error = '';
         state.apply = result?.result || null;
-        // 【P-r2-31】apply 落地序号 +1：runScan 靠它识别「扫描在途期间又有 apply
+        // apply 落地序号 +1：runScan 靠它识别「扫描在途期间又有 apply
         // 落地」的迟到场景，迟到 scan 不覆写此处落下的清理版与勾选。
         state.applySeq += 1;
         state.mergedBlocks = Number(result?.run?.mergedBlocks || 0);
         reportMetrics(result?.result);
         state.runId = String(result?.run?.runId || '');
         state.cleanedText = String(result?.result?.text || '');
-        // 【specs/013 T030】回执上屏：apply 返回的 receipts（entryRef + decisionId）。
+        // 回执上屏：apply 返回的 receipts（entryRef + decisionId）。
         state.receipts = Array.isArray(result?.receipts) ? result.receipts : [];
         const dropped = Number(result?.droppedModels || 0);
         setStatus(t('kb.transcriptCorrect.apply_done', '清理版已生成（原文未改动）', {})
@@ -1812,13 +1798,13 @@
     }
 
     /**
-     * 对照视图（方案 §七「清理版预览与回滚：diff 视图，左原文/右清理版，逐处高亮」）。
+     * 对照视图。
      * 分段只认 offsetMap（权威事实），不另算 diff；回滚入口放在同一屏，
      * 用户看完差异就能撤，不用回面板找按钮。
      */
     async function openDiffModal() {
       if (state.diffBusy || !state.runId) return;
-      // 只读不抢全局 busy（P-r1-68/P-r2-33）：apply 进行中仍可打开对照；自有
+      // 只读不抢全局 busy：apply 进行中仍可打开对照；自有
       // diffBusy 防重入（对齐 headingBusy/syncBusy 分标志惯例），finally 只清
       // 自己的标志——不会提前解锁他方在途的 apply。
       state.diffBusy = true;
@@ -1902,7 +1888,7 @@
 
     /** 另存清理版到知识库（同目录、-清理版 后缀、内容 sha1 去重）。 */
     /**
-     * 本地埋点（方案 §8.2「可选埋点，本地」）：把"确认耗时"与"保留率"记进本机
+     * 本地埋点：把"确认耗时"与"保留率"记进本机
      * metrics.jsonl。**失败不影响主流程**（埋点永远是旁路，不能因为它出错就
      * 让用户的清理失败）。
      */
@@ -1990,8 +1976,7 @@
      * 另存清理版到**用户本机文件夹**（「另存到本地文件夹…」）。
      *
      * 与「另存到知识库」的区别就在落点：库内那份是喂检索/问答的副本，本机这份是用户
-     * 拿去用的文件。真机反馈（2026-09-23）：原文是导进库的副本，产物只写回库内目录，
-     * 用户去自己放原稿的文件夹里翻不到——"在文件夹中显示"能看到，原文件夹里却没有。
+     * 拿去使用的独立文件；两个保存位置需要分别反馈。
      *
      * 目标目录由主进程决定（`library.writeTextToLocal`）：有落点线索（导入来源 / 用户上次
      * 亲手选过）就写回那个文件夹，否则弹系统保存框让用户自己挑；渲染层只负责传文本 + 文件名，
@@ -2039,12 +2024,12 @@
     }
 
     /**
-     * 清理附记（方案 §五 P1-3）：术语对照表 / 口癖删除 / 未决项 / 上下文材料 /
+     * 清理附记：术语对照表 / 口癖删除 / 未决项 / 上下文材料 /
      * 本次参数，渲染成 Markdown。可以预览，也可以另存到知识库（同目录 .md）。
      */
     async function openNotesModal() {
       if (state.notesBusy || !state.runId) return;
-      // 同 openDiffModal：只读不抢全局 busy（P-r1-68/P-r2-33），自有 notesBusy
+      // 同 openDiffModal：只读不抢全局 busy，自有 notesBusy
       // 防重入，finally 只清自己的标志。
       state.notesBusy = true;
       render();
@@ -2199,7 +2184,7 @@
     }
 
     /**
-     * 主题标题候选（方案 §五 P2-2）：**只提议**。用户在弹层里逐条"采用"，
+     * 主题标题候选：**只提议**。用户在弹层里逐条"采用"，
      * 采用的标题进入 state.headings，生成清理版时作为结构编辑插入（不改正文语义）。
      */
     async function runSuggestHeadings() {
@@ -2283,7 +2268,7 @@
 
 
     /**
-     * 装入口癖规则包（方案 §五 P1-1）：词条化 + 走既有链路。
+     * 装入口癖规则包：词条化 + 走既有链路。
      * 规则包本身是保守的：白名单词只在句首/独立出现时删，`就是/然后/对`
      * 只在重复或纯应答时删——面板必须把这件事说清楚。
      */
@@ -2319,7 +2304,7 @@
     async function runIgnore(entryRef, restore) {
       if (state.busy) return;
       const row = state.rows.find((item) => item.entryRef === entryRef);
-      // 【P-r2-31 补锁】setIgnored 是词表写操作：与文件内 11 处惯例对齐，全程持
+      // setIgnored 是词表写操作：与其他写操作一致，全程持
       // 全局 busy——不再与 apply/scan 并发交错（模型建议的本地分支同步完成，
       // 持锁只是瞬间）。
       state.busy = true;
@@ -2398,7 +2383,7 @@
     /** 移除一条加白（白名单会静默候选，必须能撤）。 */
     async function runRemoveAllow(entryRef, term) {
       if (state.busy) return;
-      // 【P-r2-31 补锁】removeAllow 是写操作且随后 rescanAfterMutation——此前
+      // removeAllow 是写操作且随后 rescanAfterMutation——此前
       // 不持锁时，rescan 的首行强制解锁会释放**他方**在途锁（apply/scan），
       // 这是「迟到 scan 覆写 apply 后状态」的主通路；持锁后释放的只会是自己的。
       state.busy = true;
@@ -2446,7 +2431,7 @@
       try {
         const result = await root.cogseed.invoke('transcript.glossary.applyAlignment', { entryId: entryRef, correct });
         // 主进程找不到条目时返回 `entry: null`——**这不是成功**。此前不看回执就报
-        // "已改为：X"，用户对着没变的词表反复点（真机：更多 → 改写法"点了没用"）。
+        // "已改为：X" 必须以实际更新回执为依据。
         if (!result?.entry) {
           state.renameOpen = '';
           setStatus(t('kb.transcriptCorrect.rename_skipped', '这条不在词表里，改写法没有生效（模型建议要先勾选并生成清理版才会写进词表）。'), 'warning');
@@ -2454,8 +2439,7 @@
         }
         state.renameOpen = '';
         // 就地更新这一行，**不整表重扫**：重扫会丢掉已勾选集合与刚生成的清理版
-        // （`runScan` 第一行就是 `if (state.busy) return`，此前带着 busy 调它等于没扫，
-        //  真机上就表现为"填了新写法、点了确定，列表还是旧的"）。
+        // 重扫会替换当前扫描状态；目标写法更新只需修改当前行。
         // 替换目标变了、错形没变 → span 仍然有效，只需要把显示数据对上。
         const entry = result.entry;
         const row = state.rows.find((item) => item.entryRef === entryRef);
@@ -2479,7 +2463,7 @@
 
 
     async function runAddEntry() {
-      // 【P-r2-31 补守卫+补锁】upsert 是写操作且随后 rescanAfterMutation：此前
+      // upsert 是写操作且随后 rescanAfterMutation：此前
       // 既无重入守卫也不持锁（apply 在途时点「加入」照样发起，rescan 首行还会
       // 强制释放 apply 的在途锁）。对齐文件惯例：先守卫、校验后持锁。
       if (state.busy) return;
@@ -2559,7 +2543,7 @@
         render();
         return;
       }
-      // 【specs/013 T026】「依据」展开/收起（纯前端，只读）。
+      // 「依据」展开/收起（纯前端，只读）。
       const basisOpen = event.target.closest('[data-atc-basis-open]');
       if (basisOpen) {
         const ref = basisOpen.getAttribute('data-atc-basis-open');
@@ -2569,7 +2553,7 @@
         render();
         return;
       }
-      // 【specs/013 T028/T030】拒绝/取消拒绝（本地标记；apply 时随 rejectedIds
+      // 拒绝/取消拒绝（本地标记；apply 时随 rejectedIds
       // 写回执账本，此后不再重复建议）。再点一次即取消（拒错可撤）。
       const reject = event.target.closest('[data-atc-reject]');
       if (reject) {
@@ -2658,7 +2642,7 @@
       if (kind === 'toggle-denied') { state.showDenied = !state.showDenied; render(); return; }
       if (kind === 'open-glossary') {
         if (root.KbGlossaryManager && typeof root.KbGlossaryManager.open === 'function') {
-          // onChanged 回调带 disposed 守卫（P-r2-36）：词表弹窗比面板活得久，
+          // onChanged 回调带 disposed 守卫：词表弹窗比面板活得久，
           // 面板销毁后词表再变更，不再对孤儿面板触发重扫。
           root.KbGlossaryManager.open({ onChanged: () => { if (!disposed) void runScan(); } });
         } else {
@@ -2692,7 +2676,7 @@
 
     return {
       destroy() {
-        // 先置 disposed（P-r2-36）：此后词表管理器的 onChanged 回调一律空转。
+        // 先置 disposed：此后词表管理器的 onChanged 回调一律空转。
         disposed = true;
         container.removeEventListener('click', onClick);
         root.removeEventListener('i18n-change', onI18nChange);
@@ -2701,7 +2685,7 @@
     };
   }
 
-  // P-r2-34：容器 → 当前活动面板实例。WeakMap 键随容器回收，不留泄漏。
+  // 容器 → 当前活动面板实例。WeakMap 键随容器回收，不留泄漏。
   const mountedPanels = new WeakMap();
 
   const api = {
@@ -2715,7 +2699,7 @@
       const text = String(ctx?.text || '');
       if (!text) throw new Error('kb transcript correct: text required');
       if (text.length > MAX_TEXT_CHARS) throw new Error('kb transcript correct: text too long');
-      // P-r2-34（mount 幂等，根治泄漏）：挂载方（anchored-source-view 的
+      // 挂载方（anchored-source-view 的
       // toggleCorrection）在 await 取全文窗口内双击重入会对同一容器 mount 两
       // 次——createPanel 每次都往 container 叠一份点击委托与 root 级
       // i18n-change 监听，而挂载方只持有最后一个实例（destroy 只摘最后一份，
@@ -2729,7 +2713,7 @@
         text,
         docId: String(ctx?.docId || ctx?.displayPath || 'transcript'),
         displayPath: String(ctx?.displayPath || ''),
-        // 【specs/013 T023/T025】挂载方已知的降级（如空间库文档只读到片段）：
+        // 挂载方已知的降级（如空间库文档只读到片段）：
         // 并进面板顶部降级说明（恰一处呈现）。
         ...(Array.isArray(ctx?.degradedNotes) && ctx.degradedNotes.length
           ? { degradedNotes: ctx.degradedNotes.map(String).filter(Boolean) }

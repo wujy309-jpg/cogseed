@@ -1,34 +1,6 @@
-/**
- * 回归 r1（收尾改名自 probe-r1-exp-merge-terminal-leak.test.ts · 2026-10-01 记账员）：
- * F-r1-25 已修，两用例已由修复员翻转为回归口径，收尾收编。
- *
- * 原探针（本轮红队-数据与注入）：经验域 mergeExperiences 两段 updater 锁内不复核终态。
- *
- * 读码链路（experience-service.ts）：
- *  - mergeExperiences :570-571 的 assertMutableExperience(source/target) 是**锁外**
- *    预检（readRecallJsonRecord 无锁直读，store.ts readExistingRecallRecord 不走
- *    fileEditLock）；
- *  - ① target updater :578-599 与 ② source updater :602-615 都在 updateExperience →
- *    updateRecallJsonRecord → fileEditLock(recordPath).runExclusive（store.ts:129）
- *    的**锁内**执行，但两个 updater 闭包里都没有再调 assertMutableExperience——
- *    预检与落盘之间夹着一个真实的并发窗口；
- *  - 对照：同文件 setExperienceStatus :476 / setExperienceType :508 /
- *    archiveExperience :634 的 updater 都在锁内复核 assertMutableExperience(current)，
- *    唯独 merge 的两段漏——与本遍 F-r1-2（资产域 mergeAbilityAssets 锁内只挡
- *    purged，已修）完全同构的经验域兄弟函数。
- *
- * 危害：窗口期内 target 被归档（archived 终态）后仍被铺 mergedFrom + 刷新
- * updatedAt；source 被归档后被强改 status='merged'（archived→merged 非法跃迁），
- * 打破 :434 注释「终态（archived/merged）拒绝：状态机里没有出弧」的承诺。
- *
- * 手法：照 asset-service.test.ts:1232-1261「锁内终态复核（r2）」的确定性时序
- * 先例——持同款 fileEditLock 让 merge 的 updateExperience 排队，持锁期间直改盘
- * 置终态，放锁后断言 updater 是否复核。
- *
- * 状态：已修（r1）——两段 updater 首行补 assertMutableExperience(current)
- * （source 段另加 mergedIntoExperienceId 锁内复核，与资产域同构），本探针
- * 两用例已按注释预写口径翻转为回归断言（rejects /terminal/ + 终态不落盘）。
- */
+/** 经验合并的 target 与 source updater 都在记录锁内重新检查终态。
+ * 排队期间被归档的对象拒绝合并，不能追加 mergedFrom 或强改为 merged；
+ * 无竞态时的锁外预检继续有效。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -97,7 +69,7 @@ function readRawDisk(recallJsonRecordPath: (uid: string, c: string, id: string) 
   return JSON.parse(fs.readFileSync(recallJsonRecordPath(UID, 'experiences', id), 'utf8')) as Record<string, unknown>;
 }
 
-describe('回归 r1 › 经验 merge 锁内终态复核（F-r1-25 已修）', () => {
+describe('经验 merge 锁内终态复核', () => {
   it('对照组：无并发时归档终态拒绝 merge，resume 亦拒绝（锁外预检与同文件先例都在）', async () => {
     const { svc, recallJsonRecordPath } = await setup();
     await svc.createExperience(UID, mkExperience('exp-src-ctl', '对照组源'));

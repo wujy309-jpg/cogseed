@@ -213,3 +213,13 @@ describe('complete source context summaries', () => {
   });
 
 });
+
+it('carries source timestamps into full-context summarization for relative dates and dated owner changes', async () => {
+  const text = '从下周起项目甲由合成接手人甲接手，先前是合成前任乙负责。';
+  await summarizeCaptureContext([{ id: 'u-date', role: 'user', text, ts: '2026-10-15T02:00:00.000Z', discovery: true }], {
+    run: async json => {
+      const input = JSON.parse(json); expect(input.segments[0].ts).toBe('2026-10-15T02:00:00.000Z');
+      return JSON.stringify({ coveredIds: ['m0:0'], topics: [topic('u-date', text)] });
+    },
+  });
+});

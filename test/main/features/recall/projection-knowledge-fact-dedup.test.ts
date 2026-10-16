@@ -3,12 +3,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-/**
- * P-r1-107 回归：loadOntologyFacts 的 factKey 覆盖 (组, 字段, 归一值) 三元组，
- * 同字段下两条空白变体值（"常住北京" vs " 常住 北京 "）归一后生成**相同 id**
- * 的事实——此前收集循环不查重，重复计入 top-24 挤占预算、下游按 id 消费见
- * 假重复。修复：读侧按 id 去重（写侧归一管不了存量盘上的空白变体）。
- */
+/** 事实 ID 由组、字段和归一值决定；读侧按 ID 去重，防止旧数据的空白
+ * 变体重复占用预算。不同值仍保留，写侧文本去重不能替代旧数据读侧去重。 */
 vi.mock('../../../../src/main/features/kb_indexer', () => ({
   enqueue: () => {},
   kbEvents: { on: () => {}, off: () => {}, emit: () => {} },
@@ -34,7 +30,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('P-r1-107 事实收集读侧按 id 去重', () => {
+describe('事实收集读侧按 id 去重', () => {
   it('同字段空白变体值只产出一条事实，不同值互不挤占', async () => {
     const groups = await import('../../../../src/main/features/personal_ontology_groups');
     const pk = await import('../../../../src/main/features/recall/projection-knowledge');
@@ -42,7 +38,7 @@ describe('P-r1-107 事实收集读侧按 id 去重', () => {
     const gid = created.group!.group_id;
     // 写侧 sanitizePoText 只 trim 首尾、不折叠连续空格，且查重是 text 精确
     // 比较——中间差一个空格的两条都落盘；读侧 \s+→' ' 折叠后归一值相同，
-    // factKey/ id 因此相同。这正是 P-r1-107 的重复机制。
+    // factKey / id 因此相同，读侧须折叠这两条等价事实。
     await groups.appendFieldValue(UID, gid, '居住地', '常住 北京', '手动');
     await groups.appendFieldValue(UID, gid, '居住地', '常住  北京', '手动');
     await groups.appendFieldValue(UID, gid, '居住地', '常住上海', '手动');

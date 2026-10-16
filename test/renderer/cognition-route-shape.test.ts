@@ -3,24 +3,9 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * router 白名单键形状（F-r4-3，2026-09-30 认知资产质检 R4）：
- *
- * store.route 的初始字面量（store 定义处）与 router.go 里 merged 的
- * Object.assign 模板是**手工双维护**的两份键清单——:1434 的
- * JSON.stringify(current) === JSON.stringify(merged) 相等性依赖两侧
- * 键集一致，只删/加一侧会使 same 恒 false，连点同一 tab 会堆积重复
- * 返回栈项。familyRename（随 849ec341 族命名功能删除后遗留）与
- * ontologyBox（自加入起从未有读写方）是两份清单里的死键，且已扩散进
- * 3 个测试夹具被当契约形状复制——本轮五处联动删除（零行为变化）。
- *
- * 这里钉两层：
- *  1. 行为级：连点同一 tab，第二次 go 必须命中 same 判定不再入栈
- *     （键集不一致时此断言红，正是「只删一侧」的事故形态）；
- *  2. 源码级：死键不得回流；初始键集必须是 merged 模板键集的子集
- *     （模板缺键会让 same 恒 false）。
- *
- * 已知相邻问题（甄别另立，不在此修）：merged 模板含 taskFailedOpen 而
- * 初始字面量没有——子集断言对它是放行的。
+ * 路由初始键与合并模板保持一致，避免相同路由被重复压入返回栈。
+ * 验证重复 go 不再入栈，已退役的 familyRename / ontologyBox 键不回流，
+ * 且初始键集是合并模板键集的子集。taskFailedOpen 允许只在模板中声明。
  */
 
 const coreSource = readFileSync(
@@ -52,7 +37,7 @@ const NS = (() => {
   };
 })();
 
-describe('router 白名单键形状（F-r4-3）', () => {
+describe('router 白名单键形状', () => {
   it('死键 familyRename/ontologyBox 不得回流到 core.js', () => {
     expect(coreSource).not.toContain('familyRename');
     expect(coreSource).not.toContain('ontologyBox');

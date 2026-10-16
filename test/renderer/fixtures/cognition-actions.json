@@ -1,5 +1,5 @@
 {
-  "comment": "认知资产现役动作契约。2026-10-12：形成统一夜间两阶段，移除手动创建、后台任务控制、独立治理待办和旧内容迁移动作。现役动作仍必须具备委托与写入pending保护。",
+  "comment": "认知资产现役动作契约。页面不暴露旧手动形成、后台任务控制、独立治理待办和内容迁移动作；现役动作须具备事件委托和写入 pending 保护。",
   "actions": [
     {
       "act": "tab",
@@ -314,11 +314,19 @@
       "phase": 7
     },
     {
-      "act": "nightly-model-add",
+      "act": "nightly-scan-now",
       "module": "cognition-assets",
-      "ipc": "recall.captures.settings.update",
+      "ipc": "recall.captures.sweep.run",
       "write": true,
       "pending": true,
+      "phase": 7
+    },
+    {
+      "act": "nightly-model-add",
+      "module": "cognition-assets",
+      "ipc": null,
+      "write": false,
+      "pending": false,
       "phase": 7
     },
     {
@@ -735,7 +743,7 @@
   "forbidden": [
     {
       "act": "batchRunNow",
-      "reason": "批量立即整理入口确认不迁移;后端能力保留,前端不暴露(施工矩阵 L48)"
+      "reason": "批量立即整理入口确认不迁移;后端能力保留,前端不暴露"
     },
     {
       "act": "run-cleanup",

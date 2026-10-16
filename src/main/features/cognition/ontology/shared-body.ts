@@ -45,6 +45,11 @@ export function synchronizeOntologyRuleBodies(doc: CognitionStoreDocument, recor
   if (!actions.length) return;
   const commandId = 'body-' + createHash('sha256').update(JSON.stringify([record.id, record.version, record.statement, doc.ontology.revision])).digest('hex').slice(0, 32);
   const outcome = applyOntologyCommand(doc.ontology, { commandId, expectedRevision: doc.ontology.revision, actions }, new Date().toISOString());
+  const editDecision = record.userEditDecision as import('../edit-decision').CognitionEditDecision | undefined;
+  if (editDecision && editDecision.committedVersion === String(record.version)) {
+    outcome.receipt.userEditDecision = editDecision;
+    outcome.document.receipts[commandId] = outcome.receipt;
+  }
   // Preserve ownership provenance while extending version history.
   for (const id of outcome.receipt.changedIds) {
     const previousSource = doc.ontology.records[id].source;

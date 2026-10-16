@@ -1,27 +1,13 @@
 /**
- * 探针（本轮红队-越权与状态 · 并发与时序）：mergeExperiences 的
- * experienceType 一致性检查只在锁外快照上做——窗口期内改类型即跨类型合并落盘。
+ * mergeExperiences 的 experienceType 并发一致性回归测试。
  *
- * 读码链路（experience-service.ts）：
- *  - :572-574 「必须同 experienceType」预检基于 readRecallJsonRecord 的**无锁直读**
- *    （store.ts readExistingRecallRecord 不走 fileEditLock）；
- *  - F-r1-25（上轮）给两段 updater 补的是 assertMutableExperience（终态复核），
- *    **没有复核类型**——修复记录自认「experienceType 锁内一致性复核未做……属
- *    另一独立 TOCTOU 窗口，留待检测线另行立项」（round-1-修复.md F-r1-25 段）；
- *  - setExperienceType（:497-524）是用户随时可改类型的合法通道（IPC
- *    recall.experiences.setType 真实可达），与 merge 并发即交错。
+ * 锁外预读通过后，setExperienceType 仍可能在真正写入前改变类型；因此 target
+ * 和 source 两段 updater 都必须在锁内复核。lesson 与 workflow 跨类型合并
+ * 必须拒绝，不能静默改变经验的分类判断。
  *
- * 危害：E5 契约明文「必须同 experienceType：跨类型合并会把『教训』并进『流程』，
- * 静默做掉等于替用户改判，所以宁可拒绝（契约 E5 的两条不变量之一）」——窗口期
- * 内类型被改后，target updater 只挡终态不挡类型，跨类型合并静默落盘。
- *
- * 手法：持 target 文件锁 → 排队一次真实 setExperienceType（改 workflow）→ 启动
- * merge（锁外读双双 lesson、预检通过、target updater 排在 setType 之后）→ 放锁
- * → setType 先落盘、merge 随后在 workflow 的 target 上铺 mergedFrom。全程确定性。
- *
- * 收尾状态（2026-10-01 记账员）：对应待议 **P-r2-16（只修实证 target 侧 vs 对称收口 source 侧镜像窗口，覆盖范围待拍板）**——
- * 断言漏洞现状的主用例 it.skip 注明编号，拍板修复后反转/改写断言启用；
- * 对照组（无竞态/串行序时链路正常）不依赖漏洞，保留 active。
+ * 用文件锁让改类型操作先排队，再启动 merge，确定性交错两次写入。target
+ * 侧拒绝时不写 mergedFrom；source 侧拒绝时保留 interrupted entry，记录部分
+ * 合并尚未完成，以便后续对账和重试。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -91,7 +77,7 @@ function readRawDisk(recallJsonRecordPath: (uid: string, c: string, id: string) 
   return JSON.parse(fs.readFileSync(recallJsonRecordPath(UID, 'experiences', id), 'utf8')) as Record<string, unknown>;
 }
 
-describe('探针 r2 › 经验 merge 的 experienceType 一致性检查在锁外（TOCTOU）', () => {
+describe('经验 merge 的 experienceType 锁内一致性（TOCTOU）', () => {
   it('对照组：无并发时跨类型 merge 被拒（lesson → workflow）', async () => {
     const { svc } = await setup();
     await svc.createExperience(UID, mkExperience('exp-src-tc', '对照组源', 'lesson'));
@@ -99,7 +85,7 @@ describe('探针 r2 › 经验 merge 的 experienceType 一致性检查在锁外
     await expect(svc.mergeExperiences(UID, 'exp-src-tc', 'exp-tgt-tc')).rejects.toThrow(/same experienceType/);
   });
 
-  it('【已修 P-r2-16】target 侧：预检通过后、target 落盘前类型被改 → 锁内复核拒绝，跨类型合并不再落盘', async () => {
+  it('target 侧：预检通过后、target 落盘前类型被改 → 锁内复核拒绝，跨类型合并不再落盘', async () => {
     const { svc, recallJsonRecordPath, fileEditLock } = await setup();
     await svc.createExperience(UID, mkExperience('exp-src-tw', '并发源', 'lesson'));
     await svc.createExperience(UID, mkExperience('exp-tgt-tw', '并发靶', 'lesson'));
@@ -135,7 +121,7 @@ describe('探针 r2 › 经验 merge 的 experienceType 一致性检查在锁外
     expect(src.mergedIntoExperienceId).toBeUndefined();
   });
 
-  it('【已修 P-r2-16】source 侧镜像窗口：预检通过后、source 落盘前 source 类型被改 → source 段锁内复核拒绝，interrupted entry 如实记未完成', async () => {
+  it('source 侧镜像窗口：预检通过后、source 落盘前 source 类型被改 → source 段锁内复核拒绝，interrupted entry 如实记未完成', async () => {
     const { svc, recallJsonRecordPath, fileEditLock } = await setup();
     await svc.createExperience(UID, mkExperience('exp-src-sm', '镜像源', 'lesson'));
     await svc.createExperience(UID, mkExperience('exp-tgt-sm', '镜像靶', 'lesson'));

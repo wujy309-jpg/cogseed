@@ -28,6 +28,28 @@ async function successfulAttemptTransfer() {
 }
 
 describe('Recall effectiveness feedback', () => {
+  it('finds old task results after 1000 newer messages and does not let twenty missing transfers starve them', async () => {
+    const { prepared: transfer, asset } = await successfulTransfer();
+    const { feedback, candidates, proofs } = await modules();
+    const store = await import('../../../../src/main/features/recall/store');
+    const nightly = await import('../../../../src/main/features/recall/nightly-feedback');
+    const candidate = await candidates.readRecallCandidate('user-a', asset.candidateId);
+    const cid = candidate.sourceRefs.find(ref => ref.subtype === 'session')!.id;
+    await store.updateRecallJsonRecord('user-a', 'projections', transfer.projectionId, current => ({ ...current!, conversationId: cid }));
+    const proof = await feedback.recordEffectivenessFeedback('user-a', { transferProofId: transfer.id, feedback: 'negative' });
+    expect(proof.nightlyFeedback?.status).toBe('pending');
+    const { conversationLayout } = await import('../../../../src/main/util/project-layout');
+    const file = conversationLayout('user-a', cid, null).messageFile;
+    fs.appendFileSync(file, [{ id: 'old-feedback-answer', from: 'commander', to: ['user'], ts: new Date().toISOString(), turn_id: 'task-a', text: 'Actual old task result.' },
+      ...Array.from({ length: 1001 }, (_, i) => ({ id: `newer-${i}`, from: 'commander', to: ['user'], ts: new Date().toISOString(), text: 'Unrelated new result.' }))]
+      .map(row => JSON.stringify(row) + '\n').join(''));
+    const pending = vi.spyOn(proofs, 'listEffectivenessProofs').mockResolvedValue([
+      ...Array.from({ length: 20 }, (_, i) => ({ ...proof, id: `missing-${i}`, transferProofId: `missing-transfer-${i}` })), proof,
+    ]);
+    await feedback.recoverNightlyEffectivenessFeedback('user-a');
+    pending.mockRestore();
+    expect(await nightly.queuedNightlyFeedback('user-a')).toEqual([expect.objectContaining({ messageId: 'old-feedback-answer', assetId: asset.id })]);
+  });
   it('preserves persisted feedback on enqueue failure and recovers it once in the next nightly sweep', async () => {
     const { prepared: transfer, asset } = await successfulTransfer();
     const { feedback } = await modules();

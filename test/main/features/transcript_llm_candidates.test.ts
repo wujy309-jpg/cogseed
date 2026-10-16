@@ -1,3 +1,4 @@
+// 身份、发言与文件名均为合成测试样例；时间仅用于解析和顺序断言。
 import { describe, it, expect } from 'vitest';
 import {
   buildReviewRequest,
@@ -9,11 +10,11 @@ import {
   REVIEW_MAX_PER_CHUNK,
 } from '../../../src/main/features/transcript_llm_candidates';
 
-// 一份真实形态的中文会议转写：错写是小写英文/同音字，不是 CamelCase
+// 合成中文转写：身份和内容均为示例，错写含小写英文/同音字，而非仅 CamelCase。
 const TRANSCRIPT = [
-  '嗯然后我们这个季度的 roadmap 还没有对齐，傅平老师说下周要过一遍。',
+  '嗯然后这份示例的 roadmap 还没有对齐，例甲角色将在练习中再确认。',
   'coxyx 那边负责 tools 的部分，plugins 也要一起看。',
-  '这块是 SpeakerA 在跟，他提过 KSTAR 的事情。',
+  '这部分由 SpeakerA 演示，示例中会用到 KSTAR。',
 ].join('\n');
 
 const known = ['SpeakerA', 'Cogseed', 'KSTAR'];
@@ -207,7 +208,7 @@ describe('部分失败不拖垮其余段（诚实回报）', () => {
   });
 });
 
-// ── token 用量（specs/013 T004：键名/量纲已按 runner 类型核实）──────────
+// ── token 用量（键名/量纲已按 runner 类型核实）──────────
 //
 // 生产路径取 `runner.run()` 的 `result.meta.usage`
 // （`{ inputTokens, outputTokens, cacheReadTokens?, cacheWriteTokens?, totalTokens }`，

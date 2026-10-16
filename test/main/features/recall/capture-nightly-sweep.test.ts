@@ -17,6 +17,10 @@ vi.mock('../../../../src/main/features/group_chat/bus', () => ({
   isQuiescent: mocks.isQuiescent, subscribeTaskTerminals: () => () => {}, subscribe: () => () => {},
 }));
 vi.mock('../../../../src/main/features/auth', () => ({
+  listEntriesForUser: async () => ({ entries: [{ provider: 'openai', model: 'first' }, { provider: 'anthropic', model: 'second' }] }),
+  hasConfiguredModelForUser: () => ({ configured: true }),
+  getConfiguredModelOAuthExpiredMessageForUser: () => null,
+
   hasConfiguredModel: () => ({ configured: true }), getConfiguredModelOAuthExpiredMessage: () => mocks.oauthExpired,
 }));
 vi.mock('../../../../src/main/model/core-agent/runner', () => ({ buildRunner: mocks.buildRunner }));
@@ -118,13 +122,31 @@ describe('the sole nightly cognition pipeline', () => {
     expect(result.modelUsage).toMatchObject(routes[1]);
     expect(mocks.saveCandidate).not.toHaveBeenCalled();
   });
-  it('lets the normal global runner resolve usable credentials despite an unrelated expired OAuth account', async () => {
+  it('processes a manually admitted capture in daytime without admitting ordinary nightly captures', async () => {
+    vi.setSystemTime(new Date(at(12, 1)));
+    const capture = await api();
+    await capture.runManualCaptureSweep(USER);
+    const [manual] = await records();
+    expect(manual.terminalRunId).toContain('-manual-');
+    mocks.runModel.mockResolvedValueOnce(answer(positive)).mockResolvedValueOnce(answer({ candidates: [] }));
+    expect((await capture.runRecallCapture(USER, manual.id)).status).toBe('no_candidate');
+    expect(mocks.runSummary).toHaveBeenCalled();
+    expect(mocks.runModel).toHaveBeenCalledTimes(2);
+    await capture.updateRecallJsonRecord(USER, 'captures', 'ordinary-night', raw => ({ ...manual, id: 'ordinary-night',
+      terminalRunId: 'nightly-sweep-ordinary', status: 'queued' }));
+    expect((await capture.runRecallCapture(USER, 'ordinary-night')).status).toBe('queued');
+    expect(mocks.runModel).toHaveBeenCalledTimes(2);
+  });
+  it('uses only the system first model in summary and judgment despite an unrelated expired OAuth account', async () => {
     const capture = await api();
     mocks.oauthExpired = 'unrelated account expired';
     mocks.runModel.mockResolvedValue(answer({ eligible: false, reason: 'No durable value', evidence: [] }));
     await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
     expect((await capture.runRecallCapture(USER, (await records())[0].id)).status).toBe('no_candidate');
     expect(mocks.buildRunner).toHaveBeenCalledTimes(2);
+    expect(mocks.buildRunner.mock.calls.map(([params]) => params.modelCandidates)).toEqual([
+      [{ provider: 'openai', model: 'first' }], [{ provider: 'openai', model: 'first' }],
+    ]);
   });
   it('settles an interrupted nightly window for later work instead of recording a model failure', async () => {
     const capture = await api();
@@ -185,7 +207,7 @@ describe('the sole nightly cognition pipeline', () => {
     mocks.isQuiescent.mockReturnValue(true);
     expect(await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings)).toMatchObject({ queued: 1 });
   });
-  it('cancels legacy scheduled captures whose source was removed and leaves active ones untouched（2026-10-15 收口）', async () => {
+  it('cancels legacy scheduled captures whose source was removed and leaves active ones untouched', async () => {
     const capture = await api();
     const now = new Date().toISOString();
     const seed = (id: string, conversationId: string) => capture.updateRecallJsonRecord(USER, 'captures', id, () => ({
@@ -329,14 +351,180 @@ describe('the sole nightly cognition pipeline', () => {
     const store = await import('../../../../src/main/features/recall/store');
     await store.updateRecallJsonRecord(USER, 'captures', failed.id, raw => ({ ...raw!, status: 'queued' }));
     vi.setSystemTime(new Date(at(12, 4)));
-    mocks.runModel.mockResolvedValue(answer({ candidates: [proposal] }));
+    // A provider could return different groups now. Replay must never ask it.
+    mocks.runModel.mockResolvedValue(answer({ candidates: [{ ...proposal, judgment: 'A different unsupported regenerated group.' }] }));
     mocks.saveCandidate.mockImplementation(async () => saved);
     const resumed = await capture.runRecallCapture(USER, failed.id);
     expect(resumed).toMatchObject({ status: 'review_ready', candidateIds: ['first-group'],
       extractionCompletedAt: saved.captureProvenance.extractionCompletedAt });
     expect(mocks.saveCandidate.mock.calls[1][1].captureKey).toBe(saved.captureKey);
     expect(mocks.saveCandidate.mock.calls[1][1].captureProvenance).toEqual(saved.captureProvenance);
+    expect(mocks.saveCandidate.mock.calls[1][1].judgment).toBe(proposal.judgment);
+    expect(mocks.runModel).toHaveBeenCalledTimes(2);
+    expect(resumed.formationCheckpoint?.groups).toEqual([expect.objectContaining({ savedCandidateId: 'first-group' })]);
     expect(mocks.runSummary).toHaveBeenCalledTimes(1);
+  });
+  it('does not regenerate a prepared batch after its original source changes', async () => {
+    const capture = await api();
+    await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    const proposal = { judgment: 'Always keep decisions traceable.', summary: 'Traceable decisions',
+      value: 'Future decisions remain auditable.', suggestedScope: 'project', suggestedAction: 'create', risk: 'low', evidence: ['m1'] };
+    mocks.runModel.mockResolvedValueOnce(answer(positive)).mockResolvedValueOnce(answer({ candidates: [proposal] }));
+    mocks.saveCandidate.mockRejectedValueOnce(new Error('temporary save failure'));
+    const failed = await capture.runRecallCapture(USER, (await records())[0].id);
+    expect(failed.formationCheckpoint?.groups).toHaveLength(1);
+    await capture.updateRecallJsonRecord(USER, 'captures', failed.id, raw => ({ ...raw!, status: 'queued' }));
+    mocks.getMessagesPage.mockResolvedValue({ history: [row('u1', 11, 'user', 'Never keep the earlier rule.'), row('a1', 11, 'assistant')], nextCursor: null });
+    expect(await capture.runRecallCapture(USER, failed.id)).toMatchObject({ status: 'failed', errorCode: 'formation_checkpoint_stale' });
+    expect(mocks.runModel).toHaveBeenCalledTimes(2);
+    expect(mocks.saveCandidate).toHaveBeenCalledTimes(1);
+  });
+  it('marks only an uncommitted legacy R group for source review without rewriting the frozen input or saved group', async () => {
+    const capture = await api();
+    const bridge = await import('../../../../src/main/features/cognition_bridge');
+    const ontology = await import('../../../../src/main/features/cognition/ontology/service');
+    await bridge.replaceCognitionSources(USER, { mode: 'unified', revision: 1, records: { 'ability-assets': {}, candidates: {} },
+      po: { groups: [], trash: [] }, pendingProjection: false, migratedAt: WINDOW });
+    await ontology.commitOntologyCommand(USER, { commandId: 'checkpoint-seed', expectedRevision: 0,
+      actions: [{ intent: 'create', recordId: 'checkpoint-module', sourceLabel: 'Synthetic project baseline',
+        record: { kind: 'module', name: 'Checkpoint fixture', description: '', scope: { kind: 'project', id: 'project-1' } } }] });
+    const bodies = ['Keep decisions traceable in future project reports.', 'Keep the original evidence in future incident reviews.'];
+    const source = bodies.join(' ');
+    mocks.getMessagesPage.mockResolvedValue({ history: [row('u1', 11, 'user', source), row('a1', 11, 'assistant', 'Both proposals remain pending review.')], nextCursor: null });
+    await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+    const proposals = bodies.map((judgment, index) => ({ judgment, summary: 'Future source checks', value: 'Use original evidence in future project decisions.',
+      suggestedType: 'cognition', suggestedScope: 'project', suggestedAction: 'create', risk: 'low', evidence: ['m1'],
+      ontologyChanges: { reason: 'Synthetic explicit user requirement', evidence: ['m1'],
+        actions: [{ intent: 'create', recordId: `checkpoint-rule-${index}`, sourceLabel: 'Original user requirement',
+          record: { kind: 'rule', moduleId: 'checkpoint-module', name: `Source rule ${index}`, requirementSource: 'cognition_body',
+            strength: 'default', condition: null, effect: { kind: 'note' }, exception: '' } }],
+        refs: [{ moduleId: 'checkpoint-module', recordId: `checkpoint-rule-${index}`, versionPolicy: 'current', sharedBody: true }] } }));
+    mocks.runModel.mockResolvedValueOnce(answer({ eligible: true, reason: 'Two reusable source requirements', evidence: [{ messageId: 'u1', quote: source }] }))
+      .mockResolvedValueOnce(answer({ candidates: proposals }))
+      .mockResolvedValueOnce(answer({ assessments: proposals.map((_, index) => ({ index,
+        checks: { supported: true, noUnsupportedClaims: true, scopePreserved: true, finalDecisionPreserved: true,
+          priorContentPreserved: true, evidence: [{ label: 'm1', quote: source }] }, uncertaintyDisposition: 'none',
+        sourceRuleConclusions: [{ recordId: `checkpoint-rule-${index}`, status: 'resolved',
+          expectedContract: { strength: 'required', condition: null, effect: { kind: 'note' }, exception: '' },
+          topicEvidence: [{ label: 'm1', approvedQuoteIndex: 0 }], fieldEvidence: {
+            strength: [{ label: 'm1', quote: bodies[index] }], condition: [], effect: [], exception: [] } }] })) }));
+    let saved: any;
+    mocks.saveCandidate.mockImplementationOnce(async (_user, input) => (saved = { ...input, id: 'checkpoint-saved', status: 'pending_review' }))
+      .mockRejectedValueOnce(new Error('second group interrupted'));
+    const failed = await capture.runRecallCapture(USER, (await records())[0].id);
+    expect(failed).toMatchObject({ status: 'failed', errorCode: 'candidate_save_failed' });
+    expect(failed.formationCheckpoint!.groups).toHaveLength(2);
+    for (const group of failed.formationCheckpoint!.groups) {
+      expect(group.ruleSourceAssessment).toMatchObject({ policyVersion: 3, sourceFingerprint: expect.any(String),
+        finalInputFingerprint: expect.any(String), resultingContracts: [{ recordId: `checkpoint-rule-${group.index}`, strength: 'required' }] });
+      expect(group.input.ontologyFormation!.previewChanges[0].after).toMatchObject({ strength: 'required' });
+    }
+    const legacy = structuredClone(failed.formationCheckpoint!);
+    delete legacy.groups[1].ruleSourceAssessment;
+    const originalInputs = structuredClone(legacy.groups.map(group => group.input));
+    const savedBefore = structuredClone(saved);
+    await capture.updateRecallJsonRecord(USER, 'captures', failed.id, current => ({ ...current!, status: 'queued',
+      formationCheckpoint: legacy, formationBatchAssessment: undefined }));
+    const candidates = await import('../../../../src/main/features/recall/candidate-service');
+    vi.mocked(candidates.readRecallCandidate).mockImplementation(async (_user, id) => id === saved.id ? saved : undefined as any);
+    mocks.runModel.mockRejectedValue(new Error('checkpoint recovery must not call a model'));
+    mocks.saveCandidate.mockImplementation(async (_user, input) => ({ ...input, id: 'checkpoint-resumed', status: 'pending_review' }));
+    const resumed = await capture.runRecallCapture(USER, failed.id);
+    expect(resumed.status).toBe('review_ready');
+    expect(mocks.runModel).toHaveBeenCalledTimes(3); expect(mocks.runSummary).toHaveBeenCalledTimes(1);
+    expect(mocks.saveCandidate).toHaveBeenCalledTimes(3); // saved group is never resubmitted
+    const submitted = mocks.saveCandidate.mock.calls[2][1];
+    expect(submitted.uncertainty).toContain('尚未完成来源优先');
+    expect(submitted.ontologyFormation.blockedReasons).toContain('rule_source_assessment_required');
+    expect(resumed.formationCheckpoint!.groups.map(group => group.input)).toEqual(originalInputs);
+    expect(resumed.formationCheckpoint!.groups[0].savedCandidateId).toBe(saved.id);
+    expect(saved).toEqual(savedBefore);
+  });
+  it('rechecks an uncommitted target on replay and preserves the original version instead of silently rebasing', async () => {
+    const capture = await api();
+    const existing = await import('../../../../src/main/features/recall/capture-existing-assets');
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const admission = await import('../../../../src/main/features/recall/prompt-injection');
+    const target = { id: 'existing-policy', ownerId: USER, title: 'Existing policy', statement: 'An earlier traceability policy.',
+      version: '1', activeVersion: '1', status: 'active', type: 'cognition', scope: 'project', evidenceRefs: [] };
+    const selection = vi.spyOn(existing, 'selectCaptureExistingAssets').mockResolvedValue({ assets: [target as any],
+      coverage: { total: 1, selected: 1, truncated: false, unavailable: 0 } });
+    const lookup = vi.spyOn(assets, 'readAbilityAsset').mockResolvedValue(target as any);
+    const permitted = vi.spyOn(admission, 'filterRecallAssetsForAgentRead').mockImplementation(async (_user, rows) => rows);
+    try {
+      await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+      mocks.runModel.mockResolvedValueOnce(answer(positive)).mockResolvedValueOnce(answer({ candidates: [{
+        judgment: 'Always keep decisions traceable.', summary: 'Traceable decisions', value: 'Future decisions remain auditable.',
+        suggestedScope: 'project', suggestedAction: 'update', targetAssetId: target.id, risk: 'low', evidence: ['m1'],
+        comparison: { relation: 'evidence', reason: 'Approved support for the same traceability policy.', targetAssetId: target.id,
+          targetVersion: '1', targetQuote: target.statement },
+      }] }));
+      mocks.saveCandidate.mockRejectedValueOnce(new Error('interrupted before save'));
+      const failed = await capture.runRecallCapture(USER, (await records())[0].id);
+      expect(failed.formationCheckpoint?.groups).toHaveLength(1);
+      await capture.updateRecallJsonRecord(USER, 'captures', failed.id, raw => ({ ...raw!, status: 'queued' }));
+      lookup.mockResolvedValue({ ...target, version: '2', activeVersion: '2' } as any);
+      mocks.saveCandidate.mockImplementation(async (_user, input) => ({ ...input, id: 'review-new-baseline', status: 'pending_review' }));
+      expect((await capture.runRecallCapture(USER, failed.id)).status).toBe('review_ready');
+      expect(mocks.saveCandidate.mock.calls[1][1]).toMatchObject({ targetAssetId: target.id, targetVersionUsed: '1',
+        uncertainty: expect.stringContaining('在用版本已变化') });
+      expect(mocks.runModel).toHaveBeenCalledTimes(2);
+    } finally { selection.mockRestore(); lookup.mockRestore(); permitted.mockRestore(); }
+  });
+  it('rechecks prepared targets with source context instead of quoted prohibitions or a proposed scope', async () => {
+    const capture = await api();
+    const assets = await import('../../../../src/main/features/recall/asset-service');
+    const admission = await import('../../../../src/main/features/recall/prompt-injection');
+    const target = { id: 'existing-policy', ownerId: USER, title: 'Existing policy',
+      statement: 'Always keep decisions traceable. Informal chat is excluded.',
+      version: '1', status: 'active', type: 'cognition', scope: 'project', evidenceRefs: [],
+      maturity: 'bud', lifecycleStatus: 'automatically_extracted_unverified',
+      forbiddenWhen: ['informal chat'], scopePolicy: { projectIds: ['project-1'] } };
+    const comparison = { relation: 'evidence', reason: 'New approved support for the same policy with its original boundary.',
+      targetAssetId: target.id, targetVersion: '1', targetQuote: target.statement };
+    const selection = vi.spyOn(assets, 'listAbilityAssets').mockResolvedValue([target as any]);
+    const lookup = vi.spyOn(assets, 'readAbilityAsset').mockResolvedValue(target as any);
+    // Keep the real inspect/source/scope/forbidden gates; the previous replay
+    // fixture returned every row and could not reveal this context mismatch.
+    const realAdmission = admission.filterRecallAssetsForAgentRead;
+    const permitted = vi.spyOn(admission, 'filterRecallAssetsForAgentRead').mockImplementation(realAdmission);
+    try {
+      // Even the authenticated source/summary may discuss the forbidden case;
+      // quoted data must remain a ranking query, not the running task.
+      mocks.getMessagesPage.mockResolvedValue({ history: [row('u1', 11, 'user', target.statement), row('a1', 11, 'assistant')], nextCursor: null });
+      await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
+      mocks.runModel.mockResolvedValueOnce(answer({ ...positive, evidence: [{ messageId: 'u1', quote: target.statement }] })).mockResolvedValueOnce(answer({ candidates: [{
+        judgment: target.statement, summary: 'Traceable decisions', value: 'Future decisions remain auditable.',
+        uncertainty: 'Compare the preserved original boundary with the complete target.',
+        suggestedScope: 'project', suggestedAction: 'update', targetAssetId: target.id, risk: 'low', evidence: ['m1'], comparison,
+      }] })).mockResolvedValueOnce(answer({ assessments: [{ index: 0,
+        checks: { supported: true, noUnsupportedClaims: true, scopePreserved: true, finalDecisionPreserved: true,
+          priorContentPreserved: true, evidence: [{ label: 'm1', quote: target.statement }] },
+        uncertaintyDisposition: 'none', comparison,
+      }] }));
+      mocks.saveCandidate.mockRejectedValueOnce(new Error('interrupted before save'));
+      const failed = await capture.runRecallCapture(USER, (await records())[0].id);
+      expect(failed.errorCode).toBe('candidate_save_failed');
+      expect(failed.formationCheckpoint?.groups).toHaveLength(1);
+      expect(permitted.mock.calls[0][2]).toMatchObject({ projectId: 'project-1' });
+      expect(permitted.mock.calls.every(call => !call[2]?.taskText && !call[2]?.purpose)).toBe(true);
+      await capture.updateRecallJsonRecord(USER, 'captures', failed.id, raw => ({ ...raw!, status: 'queued' }));
+      // Access revoked after preparation must still fail closed, without
+      // regenerating the model result or committing the frozen group.
+      lookup.mockResolvedValueOnce({ ...target, scopePolicy: { projectIds: ['another-project'] } } as any);
+      expect(await capture.runRecallCapture(USER, failed.id)).toMatchObject({ status: 'failed', errorCode: 'formation_baseline_unavailable' });
+      expect(mocks.saveCandidate).toHaveBeenCalledTimes(1);
+      await capture.updateRecallJsonRecord(USER, 'captures', failed.id, raw => ({ ...raw!, status: 'queued' }));
+      // The model's suggestedScope is not an actual purpose-tag grant.
+      lookup.mockResolvedValueOnce({ ...target, scopePolicy: { purposeTags: ['project'] } } as any);
+      expect(await capture.runRecallCapture(USER, failed.id)).toMatchObject({ status: 'failed', errorCode: 'formation_baseline_unavailable' });
+      expect(mocks.saveCandidate).toHaveBeenCalledTimes(1);
+      await capture.updateRecallJsonRecord(USER, 'captures', failed.id, raw => ({ ...raw!, status: 'queued' }));
+      mocks.saveCandidate.mockImplementation(async (_user, input) => ({ ...input, id: 'review-source-context', status: 'pending_review' }));
+      expect((await capture.runRecallCapture(USER, failed.id)).status).toBe('review_ready');
+      expect(mocks.saveCandidate).toHaveBeenCalledTimes(2);
+      expect(mocks.runModel).toHaveBeenCalledTimes(3);
+    } finally { selection.mockRestore(); lookup.mockRestore(); permitted.mockRestore(); }
   });
   it('admits feedback on an already-covered historical answer through the same next-night pipeline', async () => {
     const capture = await api(); await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
@@ -567,10 +755,10 @@ describe('the sole nightly cognition pipeline', () => {
       judgment: '会议准备模板：会议目标、背景事实、三个待决策问题、负责人和下一步行动。',
       summary: '项目会议议程', value: '供后续项目会议复用，减少重复准备并使决策责任清晰。',
       suggestedType: 'template', suggestedScope: 'project', suggestedAction: 'create', evidence: ['m1'],
-    }] })).mockResolvedValueOnce(answer({
+    }] })).mockResolvedValueOnce(answer({ assessments: [{ index: 0, uncertaintyDisposition: 'content_unresolved', checks: {
       supported: false, noUnsupportedClaims: false, scopePreserved: false,
       finalDecisionPreserved: false, priorContentPreserved: false, evidence: [],
-    }));
+    } }] }));
     const screening = await import('../../../../src/main/features/recall/capture-value-screening');
     expect(screening.assessRecallCandidateClassification({
       judgment: '会议准备模板：会议目标、背景事实、三个待决策问题、负责人和下一步行动。',
@@ -581,7 +769,7 @@ describe('the sole nightly cognition pipeline', () => {
     expect(result.status).toBe('no_candidate');
     expect(mocks.runModel).toHaveBeenCalledTimes(3);
     expect(JSON.parse(mocks.runModel.mock.calls[1][0].message).messages[0].text).toBe(source);
-    expect(JSON.parse(mocks.runModel.mock.calls[2][0].message).approvedUserSources[0].approvedQuotes).toEqual([positive.evidence[0].quote]);
+    expect(JSON.parse(mocks.runModel.mock.calls[2][0].message).candidates[0].sources[0].approvedQuotes).toEqual([positive.evidence[0].quote]);
     expect(mocks.saveCandidate).not.toHaveBeenCalled();
   });
   it('keeps later scope restrictions and corrections in extraction even when value cites only the earlier requirement', async () => {

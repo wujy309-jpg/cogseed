@@ -1,17 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 /**
- * 经验/失败面通道的「失败自重试死循环」断环回归（P-r2-21 / P-r1-54 /
- * P-r1-56，预审决策卡组 4「失败不 notify——保留自愈自重试，零 UI 改动」）。
- *
- * 环的构成（修前）：按需 loader 的守卫放行失败态（有意设计）+ 装载尾部
- * 无条件 notify × onChange 钩子看到 failed 就补拉 → 「失败→重画→再拉」
- * 自激死循环（探针实测 2 秒自续 10001 次 IPC）。修法只掐环的后一半：
- * 失败路径不再 notify；成功路径照常 notify。自愈自重试必须保留——下一次
- * 任意 notify（用户操作/其他区块成功）经钩子看到 failed 仍会重拉。
- *
- * 装配与 cognition-inbox-error-state.test.ts 同构：core.js 是 IIFE，require
- * 一次即挂 window.CogAssets，唯一 IPC 出口是 window.cogseed.invoke。
+ * 按需 loader 失败不得通过 notify 自激成请求循环。
+ * 失败路径不 notify，成功路径照常通知；后续用户操作或其他区块通知时，
+ * failed 状态仍可重拉。测试以 mock IPC 计数核对该通知边界。
  */
 
 const globalScope = globalThis as unknown as Record<string, unknown>;
@@ -48,7 +40,7 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-describe('组4：经验/失败面通道失败不 notify（P-r2-21 / P-r1-54）', () => {
+describe('经验/失败面通道失败不 notify', () => {
   it('标签加载器已退役，重绘不请求标签库', async () => {
     expect((NS as unknown as Record<string, unknown>).loadTags).toBeUndefined();
     const before = count('recall.tags.list');

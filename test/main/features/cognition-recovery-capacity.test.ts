@@ -1,18 +1,6 @@
-/**
- * cognition deactivate 恢复的容量毒丸回归（P-r1-39）。
- *
- * 修复前：transitions 恰为 1199（非失效上限）且带存量 deactivate 意图的资产，
- * 每次 listCognitionAssetPage / listActiveCognitionSourceIds 都在 reconcile
- * 阶段抛 `cognition transition count exceeds 1200`（数值还是错的，实际闸在
- * 1199）——该用户资产分页永久不可用，且抛错发生在写盘之前、盘上毒丸组合
- * 永不被清（亲跑复现无自愈）。
- *
- * 修复后（invalidate 自愈降级 + 残余隔离）：
- * - 已确认过（confirmedAt 在场）的毒丸资产：先取下共享记忆，再把恢复落成
- *   带审计轨迹的失效终态（reason='removed'）——恢复完成、毒丸被清出盘面；
- * - 从未确认过的毒丸资产（invalidated 终态要求 confirmedAt，写盘校验会反
- *   炸）：跳过该资产的恢复（隔离），读路径继续、盘面不动。
- */
+/** 认知失效恢复的容量边界：带 1199 条转换及未完成 deactivate 意图的
+ * 已确认资产可清除共享记忆并进入带审计的失效终态；从未确认的异常资产
+ * 隔离跳过，不改盘面，也不能阻断其他资产的分页与读取。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -126,7 +114,7 @@ async function writePoisonStore(asset: unknown): Promise<string> {
   return before;
 }
 
-describe('cognition › P-r1-39 deactivate 恢复容量毒丸', () => {
+describe('cognition › deactivate 恢复容量毒丸', () => {
   it('已确认过的毒丸：分页可用，恢复降级为带审计的失效终态并清出盘面', async () => {
     const before = await writePoisonStore(await buildPoisonInvalidated());
     const { userCognitionFile } = await import('../../../src/main/paths');

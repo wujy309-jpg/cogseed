@@ -1,14 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 /**
- * 三个按需 loader 失败静默置空且被缓存判重挡死（P-r1-52，预审决策卡组 7
- * 「loader 失败置 stale」）：loadDeletedAssets / loadInspection /
- * loadCleanupReports 失败时此前写 {loading:false} 不带 stale——守卫
- * `!stale` 判重直接 return，「没读到」永久伪装「没有」。修法（catch 补
- * stale，3 行最小自愈）：失败置 stale=true；巡检/报告同时缓存 failed 防止通知自续，由 force 显式重试；成功
- * stale=false 照常缓存。视图零改动（失败态文案已另批走查）。
- *
- * 装配与 cognition-inbox-error-state.test.ts 同构。
+ * 按需 loader 读取失败保留 stale，使显式重试可以再次请求。
+ * loadDeletedAssets / loadInspection / loadCleanupReports 成功后恢复缓存；
+ * 巡检与报告失败还须记 failed，避免通知循环自动重试，改由 force 重试。
  */
 
 const globalScope = globalThis as unknown as Record<string, unknown>;
@@ -44,7 +39,7 @@ async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
-describe('组7：按需 loader 失败置 stale（P-r1-52）', () => {
+describe('按需 loader 失败置 stale', () => {
   it('loadDeletedAssets 失败置 stale，第二次调用自愈重拉；成功后不 stale、缓存判重照旧', async () => {
     invokeImpl = async (channel) => (channel === 'recall.assets.deleted.list'
       ? { ok: false, error: 'deleted list unreadable', code: 'E_IO' }

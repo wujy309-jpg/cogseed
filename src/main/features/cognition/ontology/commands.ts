@@ -45,7 +45,8 @@ export function validateOntologyCommand(raw: unknown): OntologyCommand {
   try { serialized = JSON.stringify(raw); } catch { throw new OntologyError('invalid_input', 'ontology command must be JSON'); }
   if (!serialized || Buffer.byteLength(serialized, 'utf8') > 1024 * 1024) throw new OntologyError('invalid_input', 'ontology command too large');
   const parsed = commandSchema.safeParse(raw);
-  if (!parsed.success) throw new OntologyError('invalid_input', 'invalid ontology command: ' + parsed.error.issues.slice(0,8).map(issue => issue.path.join('.') + ' ' + issue.message).join('; '), { issues: parsed.error.issues.slice(0,8).map(issue => ({ path: issue.path, message: issue.message })) });
+  if (!parsed.success) throw new OntologyError('invalid_input', 'invalid ontology command: ' + parsed.error.issues.slice(0,8).map(issue => issue.path.join('.') + ' ' + issue.message).join('; '), { issues: parsed.error.issues.slice(0,8).map(issue => ({ path: issue.path, message: issue.message,
+    ...(issue.code === 'unrecognized_keys' ? { keys: issue.keys } : {}) })) });
   if (parsed.data.actions.length !== 1 && parsed.data.actions.some(a => a.intent === 'merge' || a.intent === 'undo_merge' || a.intent === 'undo_command'))
     throw new OntologyError('invalid_input', 'identity merge must be reviewed as one standalone operation');
   if (parsed.data.actions.some(a => (a.intent === 'change' || a.intent === 'correct') && !a.object && !a.subjectId))
@@ -195,6 +196,17 @@ function assertRecordSemantics(doc: OntologyDocument, record: OntologyRecord): v
   }
 }
 export interface OntologyCommandOutcome { document: OntologyDocument; receipt: OntologyReceipt; duplicate: boolean }
+/** Editing authorship is not a replacement source grant. Keep the previous
+ * candidate/asset chain on successors, lifecycle changes and merge redirects. */
+function preserveEditSources(value: Record<string, unknown>, before?: OntologyRecord): Record<string, unknown> {
+  if (!before || !value.source || typeof value.source !== 'object') return value;
+  const source = value.source as OntologyRecord['source'];
+  const refs = [...(source.refs || []), ...(before.source.refs || [])];
+  if (source.kind === 'user' && before.source.kind !== 'user' && before.source.recordId)
+    refs.push({ kind: before.source.kind, id: before.source.recordId });
+  const unique = [...new Map(refs.map(ref => [`${ref.kind}:${ref.id}`, ref])).values()];
+  return { ...value, source: { ...source, ...(unique.length ? { refs: unique } : {}) } };
+}
 export function applyOntologyCommand(current: OntologyDocument, input: unknown, recordedAt: string, sourceOverride?: OntologyCommandSourceOverride): OntologyCommandOutcome {
   const command = validateOntologyCommand(input);
   if (sourceOverride) {
@@ -215,8 +227,8 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
   const doc: OntologyDocument = structuredClone(current), changed = new Set<string>();
   if (Object.keys(doc.receipts).length >= 20000 || doc.history.length + command.actions.length * 2 > 100000)
     throw new OntologyError('capacity_exceeded', 'ontology change history has reached its capacity');
-  function save(value: unknown, intent: string, before?: OntologyRecord): OntologyRecord {
-    const record = validateOntologyRecord(value);
+  function save(value: unknown, intent: string, before?: OntologyRecord, sourceBefore = before): OntologyRecord {
+    const record = validateOntologyRecord(preserveEditSources(value as Record<string, unknown>, sourceBefore));
     doc.records[record.id] = record;
     doc.history.push({ commandId: command.commandId, revision: current.revision + 1, intent, recordedAt, ...(before ? { before } : {}), after: structuredClone(record) });
     changed.add(record.id); return record;
@@ -323,9 +335,8 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
       if (['id', 'kind', 'moduleId', 'version', 'createdAt', 'updatedAt', 'source'].some(key => Object.hasOwn(action.patch, key)))
         throw new OntologyError('invalid_input', 'record identity cannot be patched');
       if (action.patch.status === 'corrected') throw new OntologyError('invalid_intent', 'corrected status requires a correction command');
-      // 2026-10-08 U03：本体整体暂停写口退役——模块不能再被置为 paused。
-      // 具体条目/对象的停用走 archive；旧 paused 模块由
-      // retireOntologyModulePause 迁移（恢复 active 方向不受此限）。
+      // 模块不能被整体置为 paused；停用具体条目或对象应使用 archive。
+      // retireOntologyModulePause 迁移旧 paused 模块，恢复 active 不受此限。
       if (before.kind === 'module' && action.patch.status === 'paused')
         throw new OntologyError('invalid_intent', 'module-level pause is retired; archive individual records instead');
       save({ ...before, ...action.patch, source: { ...source, ...(before.source.refs ? { refs: before.source.refs } : {}) }, version: before.version + 1, updatedAt: recordedAt }, action.intent, before);
@@ -349,7 +360,7 @@ export function applyOntologyCommand(current: OntologyDocument, input: unknown, 
       save({ ...before, id: successorId, version: 1, object: action.object ?? before.object, subjectId: action.subjectId ?? before.subjectId, source, status: 'active',
         validity: { ...before.validity, ...(action.intent === 'change' ? { from: action.effectiveFrom } : {}) },
         ...(action.certainty ? { certainty: action.certainty } : {}), supersedesId: before.id, createdAt: recordedAt, updatedAt: recordedAt,
-      }, action.intent);
+      }, action.intent, undefined, before);
     }
   });
   // Check the final batch, so creating a module and its definitions in one atomic group is valid.

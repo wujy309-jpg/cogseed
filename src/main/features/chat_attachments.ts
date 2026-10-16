@@ -54,6 +54,7 @@ import {
 import { createLogger } from '../logger';
 import { t } from '../i18n';
 import { toCompressedGrayJpeg } from '../util/image-transform';
+import { MAX_BYTES_DOCX, MAX_BYTES_OFFICE, MAX_BYTES_PDF } from '../util/document-size-limits';
 import {
   invalidateFileCache,
   purgeFileCacheByCid,
@@ -87,10 +88,7 @@ export const ALLOWED_EXTENSIONS: ReadonlySet<string> = new Set([
 ]);
 
 const MAX_BYTES_TEXT  = 5   * 1024 * 1024;
-const MAX_BYTES_DOCX  = 20  * 1024 * 1024;
-const MAX_BYTES_OFFICE = 50 * 1024 * 1024;
 const MAX_BYTES_IMAGE = 20  * 1024 * 1024;
-const MAX_BYTES_PDF   = 100 * 1024 * 1024;
 const MAX_BYTES_VIDEO = 200 * 1024 * 1024;
 const MAX_BYTES_AUDIO = 50  * 1024 * 1024;
 
@@ -866,7 +864,7 @@ function imageMimeFromExt(ext: string): ImageMimeType {
 }
 
 /** Best-effort image extension from magic bytes. Channel image references
- * (e.g. feishu image_key, G-17 byte path) carry no extension; imported
+ * (e.g. a channel image key or a raw-byte path) carry no extension; imported
  * attachments need one for mime routing. Unknown signatures fall back to png. */
 export function imageExtForBytes(bytes: Buffer): string {
   if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'png';

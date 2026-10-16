@@ -1,11 +1,5 @@
-/**
- * 本体导出（FR-015/AC-013）feature 测试：
- *   - 快照含模块元信息与记录（id/version/status/source/validity 原样）；
- *   - owner_only（仅本人可见）记录一律不进导出，省略数如实计数；
- *   - 不携带 ownerId／用户路径；
- *   - scoped moduleId 过滤 + 未知模块 not_found；
- *   - 旧文件只读投影的模块同样可导出（同一权威读口）。
- */
+/** 本体导出：快照保留记录与来源版本，排除 owner_only 内容和用户路径，
+ * 如实记录省略数，支持模块过滤、未知模块错误与旧文件的只读投影。 */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';

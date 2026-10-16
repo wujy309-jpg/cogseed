@@ -1,23 +1,4 @@
-/**
- * 探针 r5（边界测试员 · 第 5 轮）→ 主题：setStatus 幂等早退与守卫的次序。
- *
- * 疑点：setStatus 的 updater 内部（asset-service.ts:1054-1055）——
- *   if (reviewDecisionId && current.appliedReviewDecisionIds?.includes(reviewDecisionId)) return current;
- *   guard?.(current);
- * 幂等早退发生在 guard 之前：已应用的评审决定重放会**跳过 guard**。对
- * pause/resume 等纯状态路径无害（早退不落任何变更），但 purgeAbilityAsset
- * 在 setStatus 返回后**无条件**执行 removeRecallJsonlStream + 级联清理——
- * guard（requireDeleted：保留期清扫只许清 deleted）被跳过时，破坏性后续照跑。
- *
- * 现行三个 purge 调用方（ipc:2787/:2930、retention:80）都不带 reviewDecisionId，
- * 故属潜在陷阱（未来调用方/复用 input 对象即可踩中），非现行故障——对照组
- * 证明不带 rd 时 guard 正常拒绝。风格对齐 regression-r1-asset-lifecycle.test.ts。
- *
- * 2026-09-30 r1 收尾（记账员）：对应待议 P-r1-2（A 交换次序/B 仅 purge 内
- * 二次校验/C 收紧幂等判定，影响面不同待拍板）→ it.skip。注：本用例内嵌
- * 「不带 rd 时 guard 正常拒绝」对照断言（甄别 R-2 反证曾引其 :64-90 作幂等
- * 早退行为锁定），整例 skip 后该锁定随停——拍板 P-r1-2 时需拆分或反转本用例。
- */
+/** 幂等决定重放与 requireDeleted 清除前置条件的执行顺序。 */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -65,7 +46,7 @@ async function mkAsset(id: string) {
   }, { actor: 'user', reason: 'probe seed' });
 }
 
-describe('probe r5 › purge 幂等早退跳过 requireDeleted 守卫（待议 P-r1-2，拍板前 skip）', () => {
+describe('purge 幂等早退跳过 requireDeleted 守卫', () => {
   it.skip('带已应用 reviewDecisionId 的 purge：guard 被跳过、状态未变但版本流被清空', async () => {
     const assets = await loadAssets();
     await mkAsset('aa-p5b');

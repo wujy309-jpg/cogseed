@@ -4,8 +4,7 @@
  * One bus instance per process. Per-cid state holds:
  *   - queues       : per-actor FIFO of inbound messages
  *   - workers      : holds one entry — the conversation's top-level turn
- *                    runtime (single FIFO inbox). G8d collapsed the old
- *                    per-actor worker map to this one runtime.
+ *                    runtime (single FIFO inbox).
  *   - listeners    : IPC stream subscribers for that conversation
  *
  * The runtime is lazy: `enqueue` calls `ensureRuntime(cid)` which spins the
@@ -172,11 +171,8 @@ function thinkingLevelForRun(): "off" | "low" | "high" | "auto" {
 /** 思考展示兜底辅助：本轮模型是否被识别为 reasoning 模型（deepseek/o系/
  * gemini-pro/grok 等全系）。按模型名前缀宽松判定——与
  * model_id_recognition.ts 的规则同源精简。
- * PR209 评审 M8：无显式模型名（execConfig.model 为空）返回 **false**
- * ——此前恒 true 会把 low 盲发给未显式指定模型的回合（实际走默认模型，
- * 可能非推理端点），与「识别不出不盲发」的注释矛盾。默认链路的思考
- * 兜底交给 pi-ai 模型目录的 defaultReasoning（已策展，更准确）。 */
-// 导出供回归测试（空模型名 → false 的收紧是 M8 的核心行为）。
+ * 无显式模型名（execConfig.model 为空）时返回 false，不向未知端点强加 low；
+ * 默认链路使用 pi-ai 模型目录的 defaultReasoning。 */
 export function _modelSupportsThinkingByDefault(item: QueueItem): boolean {
   const modelId = String(item.execConfig?.model || "").trim().toLowerCase();
   if (!modelId) return false;
@@ -219,11 +215,9 @@ export function _targetsDeepSeekOfficialApi(uid: unknown, providerId: unknown): 
   }
 }
 
-/** Option C（推理强度按模型声明的档位）：解析有效模型声明的思考档位（宿主
- *  可表达的子集 off|low|high）。**解析不出就返回 undefined**——"不知道"不等于
- *  "没有档位"，调用方据此跳过校验，绝不因为一次能力查询失败或模型没有声明而
- *  拒掉一个本来能跑的回合。判定本身在 model/reasoning_effort.ts，与 auth 的
- *  列表标注共用同一份口径。 */
+/** 解析有效模型声明的思考档位（宿主可表达的子集 off|low|high）。
+ *  解析不出就返回 undefined，调用方跳过校验；能力未知不能等同于不支持。
+ *  判定与 auth 列表标注共用 model/reasoning_effort.ts 的规则。 */
 export async function _declaredReasoningLevelsFor(
   uid: string,
   modelOverride?: { provider?: string; model?: string },
@@ -794,26 +788,20 @@ type ProcessEvent = { stream: string; data?: unknown };
 type ProcessItem =
   | { type: "progress"; text: string; event?: ProcessEvent }
   | { type: "event"; event: ProcessEvent }
-  // PR209 评审 M9：思考 progress 的运行时标记（内存态专用，落盘 JSON.stringify
+  // 思考 progress 的运行时标记（内存态专用，落盘 JSON.stringify
   // 会带上但读取方忽略未知字段，无契约影响）。
   | { type: "progress"; text: string; event?: ProcessEvent; _thinking?: boolean };
 
 /**
- * conv-core 存储补差合并：老格式 processItems + chat_events 新条目合成单条
- * 过程轨迹，总量守住 MAX_PROCESS_ITEMS_PER_TURN（消息过程上限是既有不变量，
- * 见 bus-integration 饱和测试）。
+ * 将兼容格式 processItems 与 chat_events 条目合成单条过程轨迹，
+ * 总量不超过 MAX_PROCESS_ITEMS_PER_TURN。
  *
- * 顺序契约（2026-09-11 真机二次事故）：条目顺序即时间线，合并结果的相对顺序
- * 必须与到达序一致——渲染层一见 chatItem 就整体走事件重放（不再看老格式），
- * 顺序错了历史里就成了「中途思考全堆到末尾」。取舍只决定丢谁，绝不改变保留
- * 项的前后关系（19:38 消息：收集器 33 段思考本已与工具交错，落盘变成末尾
- * 14 段——正是超额路径按"非 reasoning 在前"重排 + 截断所致）。
+ * 渲染层遇到 chatItem 会整体按事件重放，因此合并结果必须保持到达序。
+ * 预算取舍只决定保留哪些条目，不能改变它们的相对顺序。
  *
  * 超额预算分配：
  *   1. 老格式思考 progress（_thinking 内存态标记）与 chat_events reasoning 是
- *      同一次思考的重复存储——超额时先从后往前丢这些重复项换预算。真机
- *      19:38：155+164 超 19 条，丢 19 条重复思考后 136+164=300 恰好落回预算
- *      内，零丢失且时间线完整（对齐"丢谁不丢序"）。
+ *      同一次思考的重复存储，超额时先从后往前丢这些重复项。
  *   2. 仍超额才按优先级选保留集合：turn 终态（收束态总耗时的唯一来源）>
  *      非 reasoning（工具/正文/usage）> reasoning；选中后仍按原序输出。
  * 老格式已打满上限、且没有重复思考可丢时新条目全弃——历史重建回退老路径，
@@ -1332,7 +1320,7 @@ export type GroupEvent =
       turn_id?: string;
       source_msg_id?: string;
       reason?: "terminal_handoff";
-      /** 渠道任务接续（G0）失败回执：仅当回合因意外错误终止时由 worker
+      /** 渠道任务接续失败回执：仅当回合因意外错误终止时由 worker
        *  catch 分支携带（截断后的错误摘要）。正常 silent 与用户取消不带，
        *  渠道 runtime 依此区分"要不要给用户一条失败提示"。 */
       error?: string;
@@ -1352,7 +1340,7 @@ export interface ActiveTurn {
 // ── Per-cid state ────────────────────────────────────────────────────────
 
 interface QueueItem {
-  /** Target actor of this turn — who runs it. G8d: top-level turns funnel
+  /** Target actor of this turn — who runs it. Top-level turns funnel
    * through one per-conversation runtime (not a per-actor worker map), so the
    * target rides on the item and the runtime sets its `actor` per turn before
    * `runTurn`. */
@@ -1399,10 +1387,10 @@ interface QueueItem {
    * post-turn enqueue is suppressed — otherwise every silent observation
    * would emit a "(no reply)" placeholder bubble and pollute the chat. */
   tap?: boolean;
-  /** G8d: this turn is an in-process nested sub-run (a dispatch tool running a
+  /** This turn is an in-process nested sub-run (a dispatch tool running a
    * worker/agent turn inside its caller's turn). Threaded into
    * `streamChatWithModel` so the run skips the global concurrency slot the
-   * parent already holds (charter §6). Top-level turns leave it unset. */
+   * parent already holds. Top-level turns leave it unset. */
   nested?: boolean;
   /** Whether files from this turn are themselves being delivered to the user.
    * Process dispatches still return paths to the commander and retain files in
@@ -1422,7 +1410,7 @@ interface QueueItem {
    *  triggering user message. Consumed by runActorTurnBody to override the
    *  model / thinking strength for THIS turn only. */
   execConfig?: TurnExecutionConfig;
-  /** 本条回合所属的协作运行 id（设计 §4.1）：终态回复落盘时带上，便于按 run 汇总。 */
+  /** 本条回合所属的协作运行 id：终态回复落盘时带上，便于按 run 汇总。 */
   runId?: string;
   /** A coordinated nested attempt keeps run accounting pending until the
    * retry/fallback policy selects the actor's terminal outcome. */
@@ -1594,26 +1582,12 @@ export interface TaskTerminalEvent {
 export type TaskTerminalListener = (event: TaskTerminalEvent) => void;
 
 /**
- * Per-cid in-memory state (workers, listeners, producedPaths, …).
+ * Per-cid state is shared through a global Symbol so CJS and ESM loaders use
+ * the same queues, workers and listeners. Separate module-local Maps would
+ * make enqueue and dropConv operate on different conversation state.
  *
- * Pinned on `globalThis` under a `Symbol.for` key so that **all** module
- * instances of this file share one Map. **Why** this file gets loaded more
- * than once: in the Electron runtime everything goes through tsx/cjs and we
- * end up with a single CJS instance — fine. But under vitest, this file is
- * loaded as ESM by tests (`await import('.../bus')`) AND as CJS by
- * `chats.ts` (`require('./group_chat/bus')`, see the comment in that file).
- * Two instances means two separate `_cids` Maps; an enqueue on one side and
- * a dropConv on the other would silently target different state — the bug
- * `0268bce7` fixed at the IPC + plan-executor wiring layer, surfacing again
- * here for the test's bus state assertions.
- *
- * The `??=` keeps the FIRST instance's Map authoritative; subsequent loads
- * just rebind their module-local `_cids` to that same Map.
- *
- * **Convention for future bus.ts contributors**: any new module-level state
- * with cross-cid identity (Maps, Sets, registries that must agree across
- * loaders) MUST follow the same pattern. Plain `const x = new Map()` will
- * re-introduce the dual-instance bug class for that new state.
+ * The first instance's Map stays authoritative. New cross-conversation state
+ * that must agree across loaders must use the same shared-registry pattern.
  */
 const _BUS_CIDS_KEY = Symbol.for("cogseed.group_chat.bus._cids");
 const _cids: Map<string, CidState> = ((globalThis as any)[_BUS_CIDS_KEY] ??=
@@ -2469,19 +2443,9 @@ export interface ProjectedUserTaskMessageInput {
 }
 
 /**
- * R-11: ask the commander for exactly one reporting round once every actor of this
- * run has reached a terminal. Shared by the normal actor-result path, the
- * worker-failure path, and the projected/backend (wake-dispatched) member path —
- * a failed worker must produce a *degradation* report ("X failed: reason") instead
- * of dying silently, which is exactly what happened on 2026-10-13: a network
- * failure ("fetch failed") left report_enqueued unset and the commander never said
- * anything.
- *
- * 2026-10-14 16:24 (cid 38591293f03a): a wake-dispatched worker delivered at
- * 16:24:31 through the projection path, which never called this at all — no
- * `actor report decision` line was ever logged, so the commander's last word stayed
- * "等你批准" after the worker had already finished and the run summary said
- * completed. The projected member terminal therefore owes the same check.
+ * Ask the commander for exactly one reporting round once every actor of this run
+ * has reached a terminal state. Normal results, worker failures and projected
+ * backend results share this check, so failed workers are reported as well.
  */
 async function enqueueActorReportIfOwed(
   uid: string,
@@ -2647,7 +2611,7 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
     _recordTaskRunOutcome(state, input.terminalStatus ?? (input.failureKind ? 'failed' : 'completed'));
     await recordProjectedMemberRunTerminal(input, null);
     await _syncStateStatus(state);
-    // R-11：工人（含唤醒派发）交付后把 commander 叫回来汇报一轮。必须放在
+    // 工人（含唤醒派发）交付后把 commander 叫回来汇报一轮。必须放在
     // _syncStateStatus 之后——收尾要求 isQuiescent，先入队会让运行一直不 finalize。
     await enqueueActorReportIfOwed(
       input.uid,
@@ -2746,8 +2710,7 @@ export async function appendProjectedAgentMessage(input: ProjectedAgentMessageIn
   await recordProjectedMemberRunTerminal(input, msg);
   if (state.taskRun) state.taskRun.lastMessageId = msg.id;
   await _syncStateStatus(state);
-  // R-11：同上——收尾之后再叫 commander 汇报（真机 2026-10-14 16:24：这条投影
-  // 路径此前从不触发汇报，工人的结果交付了，commander 的上一句还停在"等你批准"）。
+  // 先完成终态同步，再叫 commander 汇报，避免排队中的汇报阻止运行完成。
   await enqueueActorReportIfOwed(
     input.uid,
     input.cid,
@@ -2853,17 +2816,17 @@ export interface EnqueueParams {
     agentId: string;
     origin: 'user_selection' | 'cli_fallback' | 'active_floor' | 'failed_turn_retry' | 'message_edit';
   };
-  /** 多 Agent 提交快照（PRD FR-016）：会话成员、本条点名与按来源的模型配置，
+  /** 多 Agent 提交快照：会话成员、本条点名与按来源的模型配置，
    *  由 group facade 校验后落在用户消息上，供历史回读与运行审计。 */
   member_snapshot?: GroupMessage['member_snapshot'];
-  /** 本条所属的协作运行 id（设计 §4.1）：由 group facade 在提交被接受时创建，
+  /** 本条所属的协作运行 id：由 group facade 在提交被接受时创建，
    *  随每个收件人的队列项与消息落盘，把多次回合归到一次提交。 */
   runId?: string;
   /** Durable host-owned accounting block; rendered as a summary, never model-authored. */
   run_summary?: GroupMessage['run_summary'];
   /** 多 Agent 按来源执行配置：key = 'internal'（CogSeed + Task Agent 共享）或
    *  外接实例 agent_id。派发时按 recipient 的来源取用，替代单一 executionConfig
-   *  广播——否则内部模型会串到外接实例（FR-007/SC-002）。 */
+   *  广播，防止内部模型配置被用于外接实例。 */
   memberConfigs?: Record<string, TurnExecutionConfig>;
   /** 本次派发里哪些 recipient 是「外接实例」。外接只认自己那份配置；名单里没配就
    *  跟随该 Agent 自身默认——绝不能回落成内部共享配置（否则内部 API 连接会串到
@@ -2957,7 +2920,7 @@ export interface EnqueueParams {
  *   - If sender was an agent, also marks them as in_flight=false (their
  *     turn just ended) — though that's also done by the worker loop.
  */
-/** 按来源执行配置的内部共享键：CogSeed 与全部 Task Agent 共用一套（FR-007）。
+/** 按来源执行配置的内部共享键：CogSeed 与全部 Task Agent 共用一套。
  *  外接实例用自己的 agent_id 作为键，因此「未被显式列为外接」的收件人一律用
  *  internal —— 这样 commander、内进程 Agent、以及不在成员名单里的收件人
  *  都拿到内部共享配置，外接实例拿到各自那份，绝不互相串用。 */
@@ -3342,8 +3305,7 @@ async function _enqueueBody(
   to = Array.from(new Set(to));
 
   // 空间作用域 at dispatch time: 会话挂空间 → 丢弃未绑定空间的 recipient
-  // （CLAUDE.md §6 — "recipient 不可用则转交 commander"）。reserved ids
-  // （user/commander）恒放行。过滤后空 `to` 落入下方 sender-default 规则。
+  // reserved ids（user/commander）恒放行。过滤后空 `to` 落入下方 sender-default 规则。
   // 廉价：一次 space.json 读 + 空间派生集解析，resolveSpaceScope 已 memoise
   // 文件存在性。会话无 space_id（orphan）→ 跳过（不受限）。
   try {
@@ -3624,7 +3586,7 @@ async function _enqueueBody(
   const useSelections = _normalizeUseSelections(params.use_selections);
   const dispatchMembers = await readMembers(uid, cid);
   const recipientEpochs: Record<string, number> = {};
-  // 本次用户提交对应的协作运行：顺序强约束校验据此把步骤对回提交（设计 §4.4）。
+  // 本次用户提交对应的协作运行：顺序强约束校验据此把步骤对回提交。
   if (params.runId && fromActorId === USER_ID) {
     state.memberRunId = params.runId;
     state.memberRunIds.add(params.runId);
@@ -3814,6 +3776,16 @@ async function _enqueueBody(
     senderId: fromActorId,
     agentIds: to.filter((id) => !RESERVED_IDS.has(id)),
   });
+  // Only the official host-settled reply may bind a completed execution. The
+  // helper rechecks actor/turn identity; no paths are accepted from model text.
+  if (params.turn_end && params.turn_id && fromActorId !== USER_ID) {
+    try {
+      const { bindExecutionResultMessage } = await import('../recall/execution-result-content');
+      await bindExecutionResultMessage(uid, `turn-${params.turn_id}`, cid, msg);
+    } catch (error) {
+      log.warn('execution result message binding unavailable', { error: logErrorRef(error) });
+    }
+  }
   if (state.taskRun) {
     if (fromActorId === USER_ID && !state.taskRun.anchorMessageId) {
       state.taskRun.anchorMessageId = msg.id;
@@ -4074,14 +4046,9 @@ async function _enqueueBody(
   // echo and the downstream dispatch, which is exactly how form submissions
   // ended up as fake loading bubbles until history polling caught up.
   if (fromActorId === USER_ID) {
-    // Phase-0 chokepoint (was lost from commit 76358a8e per
-    // `docs/plans/expert-signals-phase0-wiring-gaps.md`): cancels pending
-    // silence check + extracts text-class signals (accept / correction /
-    // reject / edit) against the cached last agent message. Fire-and-
-    // forget; the correctionDetected return value is unused here — the
-    // live consumer is the `correction` signal extracted inside
-    // onUserMessage itself (the runner-side RunMetrics counter it once
-    // fed was removed with the reflection-trigger subsystem).
+    // Cancel the pending silence check and extract accept/correction/reject/edit
+    // signals against the cached last agent message. Signal emission is owned
+    // by onUserMessage; this caller does not consume its return value.
     onUserMessage({
       uid,
       cid,
@@ -4788,8 +4755,7 @@ function _stripLeadingRecipientMention(
 
 // ── Worker loop ──────────────────────────────────────────────────────────
 
-/** Map key for the conversation's single top-level-turn runtime. G8d collapsed
- * the old per-actor worker map to ONE runtime per conversation: every top-level
+/** Map key for the conversation's single top-level-turn runtime. Every top-level
  * turn (user→commander, user→agent) runs through one FIFO inbox, serially —
  * dispatch fan-out now happens in-process inside a turn (`runNestedDispatch`),
  * not via concurrent peer workers. The map stays a Map (so quiescence / abort /
@@ -4929,7 +4895,7 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
       // turn_silent here so the placeholder always resolves; it's safe if a
       // terminal was already emitted (the renderer clears idempotently), and the
       // post-finally `_syncStateStatus` below reconciles conversation status.
-      // 渠道任务接续（G0）：意外失败带上截断的错误摘要，渠道 runtime 依此
+      // 渠道任务接续：意外失败带上截断的错误摘要，渠道 runtime 依此
       // 给用户投递失败回执；用户主动中止（abort 信号已触发）不算失败，
       // 不带 error，渠道侧保持静默。
       const userAborted = w.abortController?.signal.aborted === true;
@@ -5002,7 +4968,7 @@ async function runWorkerLoop(state: CidState, w: WorkerState): Promise<void> {
   }
 }
 
-/** interrupt-steer (G9): pull pending USER messages aimed at the running actor
+/** interrupt-steer: pull pending USER messages aimed at the running actor
  *  off the FIFO so the runner can fold them into the current run (as user turns)
  *  instead of running them as a separate follow-up turn. Only plain text-only
  *  user messages are folded — items WITH attachments stay queued so their
@@ -5050,7 +5016,7 @@ async function runTurn(
 
   // Loop bookkeeping (running flag, in-flight marker, turn-start log) is the
   // scheduler's; the reusable turn body lives in `runActorTurn`. The top-level
-  // loop reads only its privacy-safe terminal classification; G8d's nested
+  // loop reads only its privacy-safe terminal classification; the nested
   // dispatch path additionally reads back text/produced for its caller.
   w.running = true;
   w.abortSource = null;
@@ -5072,7 +5038,7 @@ async function runTurn(
 
 /** Result of one actor turn. `early` = a pre-stream guard already handled the
  *  turn (emitted its own bubble + cleared in-flight) and the caller must do
- *  nothing more. `completed` carries the turn's synthesized output: G8d's
+ *  nothing more. `completed` carries the turn's synthesized output: the
  *  dispatch tool runs an actor turn as a nested sub-run and reads `text` /
  *  `produced` to hand back to its caller; the top-level loop uses only its
  *  terminal status. */
@@ -5146,7 +5112,7 @@ async function recordMemberRunTurnResult(
       artifacts,
     });
   }
-    // R-11 (decision 2026-10-13): the commander waits for the actors it
+    // The commander waits for the actors it
     // dispatched and then reports. Shared with the worker-failure path so a failed
     // worker produces a degradation report instead of dying silently.
     await enqueueActorReportIfOwed(state.uid, state.cid, item.runId, actor.id, actor.name || "");
@@ -5160,8 +5126,8 @@ type CoordinatorTurnContext = {
 };
 
 // One actor turn: per-role prompt/tools, model (or CLI agent) stream,
-// structured-output parsing, visible-bubble persistence, and (still, until
-// G8d step 3) handback / dispatch flush / ephemeral cleanup. See charter §5.
+// structured-output parsing, visible-bubble persistence, handback, dispatch
+// flush and ephemeral cleanup.
 async function runActorTurn(
   state: CidState,
   w: WorkerState,
@@ -5408,8 +5374,7 @@ async function runActorTurnBody(
   coordinator: CoordinatorTurnContext,
   chatCollector: ProcessCollector,
 ): Promise<ActorTurnResult> {
-  // 目录★集合（2026-09-19 漏取审计）：commander 目录块赋值、回合收尾算差集，
-  // 跨两个分支所以放函数体顶层。
+  // 目录相关资产集合在注入时赋值、回合收尾时算差集，跨分支共享。
   let catalogRelevantIds: ReadonlySet<string> = new Set();
   const { uid, cid, actor } = w;
   const { processItems, lease: coordinatorLease } = coordinator;
@@ -5448,8 +5413,7 @@ async function runActorTurnBody(
 
   // 空间作用域（删项目层后：会话直接挂空间，严格作用域 = 空间派生集 agents）。
   // `null` = orphan 会话（无 space_id）或空间缺失 → 回退全局可见。每 turn 解析一次，
-  // 与 workspace resolver 并列，注入 commander prompt。见 CLAUDE.md §6（外层交集，
-  // 4 个 enable-filter 站点之前，勿加第 5 个）。
+  // 与 workspace resolver 并列，注入 commander prompt，并与启用状态过滤取交集。
   let turnSpaceScope: import("../spaces").SpaceScope | null = null;
   if (turnSpaceId) {
     try {
@@ -5771,18 +5735,15 @@ async function runActorTurnBody(
     // 构建师不派活不写文件——零额外工具，数据全部走 Runtime injection 快照。
     const convKind = turnConversationKind || await getConversationKindSafe(uid, cid);
     turnConversationKind = convKind;
-    // Deterministic host routing: a task-shaped USER message opens the
-    // governed KStar task + auto-confirmed projection HERE, before the model
-    // turn — the Commander no longer has to emit kstar_control correctly
-    // (live runs failed that twice). Space-builder and non-task turns are
-    // untouched (zero KStar writes).
+    // 宿主在模型回合前为任务建立 KStar 状态与已确认投影，不依赖模型构造控制参数。
+    // 空间构建与非任务回合不写 KStar 状态。
     if (
       convKind !== "space_builder"
       && item.fromActorId === USER_ID
       && !item.internalControl
       && process.env.COGSEED_KSTAR_HOST_ROUTING !== '0'
     ) {
-      // 用户新消息到达：清除该会话的 pending 自动闭环（设计 §5）。
+      // 用户新消息到达：清除该会话的 pending 自动闭环。
       // 之后 hostRouteTaskTurn 的 judge 判定 continuation 决定任务去留。
       const { cancelAutoClose } = await import('../kstar/task-closure');
       await cancelAutoClose(uid, cid);
@@ -5854,9 +5815,9 @@ async function runActorTurnBody(
       );
     }
     // skillList stays undefined for commander — every skill is globally
-    // visible (skills are NOT project-scoped this round; see CLAUDE.md §6).
+    // visible; this skill list is not project-scoped.
   } else if (actor.kind === "worker") {
-    // G8b ephemeral worker — no agent.json. Synthesize a minimal worker config
+    // Ephemeral worker — no agent.json. Synthesize a minimal worker config
     // and reuse the agent-in-group prompt (duck-typed). The default tool set
     // (files / shell / kb / …) comes from the runner like any LLM turn; no
     // extraTools, no skills, no inputs/forms (headless — see WORKER_WORKFLOW).
@@ -5969,12 +5930,9 @@ async function runActorTurnBody(
   // explicitly grants assets per dispatch via the tools' `ability_assets`
   // field, and only those render here. CLI agents never consume this path.
   let recallCitations: RecallPromptCitation[] = [];
-  // 画像通道注入清单（committed 投影路径才会携带）：收尾时逐条落
-  // InjectionReceipt（channel='profile_memory'）——「这轮带了哪些背景记忆」
-  // 从此可查（此前画像注入零收据，审计黑洞）。
+  // 收尾时为画像注入逐条记录 channel='profile_memory' 的 InjectionReceipt。
   let recallProfileMemory: Array<{ id: string; source: string; version: string }> = [];
-  // 呈现面合一（2026-09-30）：授权块/画像块的裸渲染（无旧长导语）——目录
-  // 建成后与目录文本合成单一 <asset-context> 块一次追加（见目录段之后）。
+  // 授权块、画像块与目录文本在目录建成后合为一个 <asset-context> 块。
   let recallAuthorizedBlock = '';
   let recallProfileBlock = '';
   let recallAnswerEvidence: OntologyAnswerEvidenceBundle | undefined;
@@ -5993,14 +5951,9 @@ async function runActorTurnBody(
   if (!cliAgent) {
     if (isCommander) {
       try {
-        // KSTAR × 能力资产复用收敛（2026-08-17 spec）：一个任务只产生一次
-        // 权威能力资产选择。requirement 的 confirmed projection 是权威选择
-        // 结果——若本回合未显式携带 committedProjectionId（宿主自动路径在
-        // 任务开启时即 confirm 投影，不经过 projection-decision 控制消息），
-        // 则从当前 requirement 的 lifecycle 兜底读取，让投影真正进入
-        // Commander prompt（此前 requirement.projectionId 从未被消费，
-        // 同一任务会跑两遍 listAbilityAssets + ranking）。无投影/无效时
-        // buildRecallTurnPromptContext 自然回退 automatic projection。
+        // 同一任务只产生一次权威能力资产选择。未显式携带 committedProjectionId 时，
+        // 从当前 requirement 的 lifecycle 读取 confirmed projection 并注入 Commander。
+        // 无投影或投影无效时，buildRecallTurnPromptContext 回退 automatic projection。
         let committedProjectionId = item.committedProjectionId;
         if (!item.internalControl) {
           try {
@@ -6030,8 +5983,7 @@ async function runActorTurnBody(
           ...(item.forecastId ? { forecastId: item.forecastId } : {}),
         });
         if (recallContext.promptBlock || recallContext.answerEvidence) {
-          // 呈现面合一（2026-09-30）：不再在此处 append——授权块/画像块攒到
-          // 目录建成后合成单一 <asset-context> 一次追加（见下方目录段之后）。
+        // 授权块与画像块暂存，等目录建成后合成单一 <asset-context>，不在此处重复追加。
           recallCitations = recallContext.citations;
           recallProfileMemory = recallContext.profileMemoryEntries ?? [];
           recallAuthorizedBlock = recallContext.authorizedAssetsBlock ?? '';
@@ -6045,17 +5997,10 @@ async function runActorTurnBody(
             ? { ...recallContext.answerEvidence, ...(validationTaskText ? { taskText: validationTaskText } : {}) }
             : undefined;
         }
-        // PRD 3.6 Transfer Verified 闭环：投影资产真实注入时在同一处落
-        // ContextReuseReceipt（key=turn-<turnId>），并登记到本次运行的
-        // reuseTurnIds——终态事件据此把迁移证明关联到真实加载凭证，资产
-        // 才升 transfer_validated（下次同类任务可自动注入）。缺失这一环，
-        // terminal-proof 永远找不到 receipt → 成熟度永不升档（已观测
-        // 'transfer proof completed without a reuse receipt'）。
-        // 回执 = 「本回合真的注入了这几条」这个事实，注入发生了就该落盘；
-        // reuseTurnIds = 本次运行的簿记，只有确实开着 taskRun 时才登记。
-        // 两者此前共用一道 `state.taskRun` 门，导致实机上自动投影注入 26 次、
-        // 回执只落 4 张：终态永远找不到凭证，连 M-6 恢复也只能扫到不存在的
-        // 回执。出生继承那条路径（本函数下方）早就是这个形状，这里对齐它。
+        // Record the exact injected assets at this site. A terminal transfer proof
+        // must refer to the same ContextReuseReceipt (key=turn-<turnId>).
+        // Receipt persistence follows actual injection; reuseTurnIds bookkeeping
+        // additionally requires an active taskRun.
         if (recallCitations.length) {
           const receiptRefs = recallCitations.map((c) => c.assetId);
           try {
@@ -6084,19 +6029,17 @@ async function runActorTurnBody(
       } catch (error) {
         log.warn(`Recall prompt injection failed cid=${cid}: ${(error as Error).message}`);
       }
-      // 资产目录可发现性提示（2026-09-18）：注入解决"这一轮相关"，但模型不会
-      // 主动想到"还有别的资产"（真机样本 0/3 会去查目录）。一行提示 + TTL 缓存，
-      // 只讲"目录存在且便宜"，挑哪几条仍归模型。
+        // 目录提示用于发现未注入的可用资产；选择仍由模型负责，提示构建使用 TTL 缓存。
       let catalogText = '';
       try {
         const { assetCatalogForPromptWithRelevance } = await import('../recall/asset-catalog-hint');
-        // 目录带当轮相关度（★标记+排序，2026-09-22 砍注入后的算法落点）：
+        // 目录带当轮相关度（★标记+排序）：
         // 复用上面 recallContext 同源的当轮任务文本。
-        // 场景因子（specs/012 T017）：会话的项目/空间归属（回合顶部解析、会话级
+        // 场景因子：会话的项目/空间归属（回合顶部解析、会话级
         // 冻结）传进目录排序——命中 spaceId===turnSpaceId 或
         // scopePolicy.{projectIds,workspaceIds} 的资产给正分；两者都缺省时该因子
         // 整体缺席（≠0 分），排序行为接近现状。
-        // 修3（2026-09-30）：注入块已带入的资产（committed/模型自选/画像镜像）
+        // 注入块已带入的资产（committed/模型自选/画像镜像）
         // 在目录行尾标注 [attached]——目录保持可用全集语义但不再对已注入内容
         // 装作未知，模型不必重复翻找已到手的东西。
         const attachedAssetIds = new Set<string>([
@@ -6117,9 +6060,9 @@ async function runActorTurnBody(
         // 目录块拿不到不影响回合。
       }
 
-      // 呈现面合一（2026-09-30）：授权资产/画像/目录合成单一 <asset-context>
+      // 授权资产/画像/目录合成单一 <asset-context>
       // 块一次追加——选择分层与通道记账原样不动；目录建失败时授权/画像子区
-      // 照常合成。经验目录块按 specs/016 保持并列，不并入本块。
+      // 照常合成。经验目录块保持并列，不并入本块。
       try {
         const { composeAssetContextBlock } = await import('../recall/prompt-injection');
         const assetContext = composeAssetContextBlock({
@@ -6137,15 +6080,13 @@ async function runActorTurnBody(
         if (catalogText) systemPrompt = `${systemPrompt}\n\n${catalogText}`;
       }
 
-      // 任务经验目录（specs/016 T025 / US-802）：与上面的资产目录**并列**追加、
-      // 不合并成一段——两套集合与过滤口径互不污染（合并正是"经验稀释资产"的
-      // 老毛病，spec 背景点名要修的）。清单只给单行条目，正文模型用
-      // read_task_experience 自取（拍板 C-7：能看见、不硬注入）；拿不到同样
-      // 不影响回合。
+      // 任务经验与资产目录并列追加，集合和过滤语义独立。
+      // 清单只给单行条目，正文由模型通过 read_task_experience 读取；
+      // 清单读取失败不阻断回合。
       try {
         const { experienceCatalogForPrompt } = await import('../recall/experience-catalog-hint');
         // 挂载集（@ 带入的经验集引用）作为第 5 参传入：清单据此对「已挂载但
-        // 本轮被拦」的经验各写一条 omitted 回执（E10 的数据源），不传则该路
+        // 本轮被拦」的经验各写一条 omitted 回执，不传则该路
         // 径静默缺失——读取失败不阻塞回合，与清单本身同一条降级线。
         let experienceMounted: { taskRunId?: string; experienceIds: string[] } | undefined;
         try {
@@ -6205,7 +6146,7 @@ async function runActorTurnBody(
             assetId: asset.id,
             assetVersion: asset.version,
           }));
-          // 派发授权资产同样落 receipt + 登记 reuseTurnIds（PRD 3.6 闭环）：
+          // 派发授权资产同样落 receipt + 登记 reuseTurnIds：
           // worker 真实加载了 Commander 授权的资产，终态时应能据此升档。
           // 与投影注入同一口径：回执按「确实派发了资产」落，reuseTurnIds 才看
           // 有没有 taskRun——否则无任务运行时派发的资产不留任何加载凭证。
@@ -6244,7 +6185,7 @@ async function runActorTurnBody(
     // 出生继承的认知。和上面的 Recall 投影是两条来源：投影是这次会话里确认过的
     // 上下文，继承是这个 Agent 出生时就带着的。两者都只走宿主拼的 system prompt，
     // CLI Agent 不消费这条路径，所以也不能拿到（否则它事后会声称用过）。
-    // actor.id 就是 agent id（上面 getAgent(actor.id) 用的同一个）。G8b 临时 worker
+    // actor.id 就是 agent id（上面 getAgent(actor.id) 用的同一个）。临时 worker
     // 没有 agent.json，读出来是 null，走同一条降级路径。
     if (agentsFeat.isValidAgentId(actor.id)) {
       try {
@@ -6258,8 +6199,7 @@ async function runActorTurnBody(
         // null = 这个 Agent 生成时还没有继承机制，和「继承了空」不是一回事，
         // 但对提示词而言都是没有可注入的内容。
         if (selection) {
-          // N-3：出生时冻结的术语表随继承一起注入。它此前采集了却没有任何
-          // 路径送进提示词，「出生就该知道 KSTAR 在这里指什么」实际没发生。
+          // 出生时冻结的术语表与认知一起注入，确保继承上下文中的术语含义完整。
           const rendered = buildInheritedCognitionPrompt(selection.selected, selection.glossary);
           if (rendered.promptBlock) {
             systemPrompt = `${systemPrompt}\n\n${rendered.promptBlock}`;
@@ -6301,8 +6241,7 @@ async function runActorTurnBody(
   // skill_invoked at each successful `read_file` of a SKILL.md. Drained
   // at turn-end below using the persisted agent msg id as `turn_id`, so
   // downstream signals JOIN cleanly with text/tool_failure/retry on the
-  // same turn. Silent turns (no persisted message) drop the buffer — see
-  // expert-signals-skill-attribution plan §3.4 + `turn_hooks.ts`.
+  // same turn. Silent turns (no persisted message) drop the buffer.
   const skillBuffer = createSkillTurnBuffer();
   // Per-turn list — feeds the deliverable footer in the assistant bubble. The
   // conversation-scoped `state.producedPaths` is what uniquify consults
@@ -6376,8 +6315,7 @@ async function runActorTurnBody(
   // one as a sandboxed `<iframe>` (`chat-app://`); `agent_id` = this actor,
   // the routing target for a user→artifact interaction result.
   const turnArtifacts: Array<{ id: string; title: string }> = [];
-  // Teaching receipts were merged into cognition save receipts (2026-09-28
-  // 四病整改 7.0 修7): the runner emits candidate+taught-pending-review through
+  // The runner emits candidate+taught-pending-review through
   // onCognitionSaveReceipt, so this turn keeps no separate teaching collector.
   const turnCognitionSaveReceipts: NonNullable<GroupMessage["cognition_save_receipts"]> = [];
   const turnAssetUsageClaims: import('../recall/asset-usage-claim').AssetUsageClaim[] = [];
@@ -6404,9 +6342,29 @@ async function runActorTurnBody(
   // 一条 completed text 条目落盘——历史重放按段渲染中间正文；最终段
   // （=消息正文）不落盘，渲染层凭 status 区分防重复。
   let segmentText = "";
+  // Only assistant text since the last business-tool/visible-dispatch boundary
+  // can become the delivered answer. A terminal adoption report is bookkeeping,
+  // even when the provider thinks again or writes a nonempty closing afterward.
+  // Keep the exact local text spans, never the whole-turn streaming accumulator.
+  let phaseTextSegments: string[] = [];
+  let phaseTextItemIds = new Set<string>();
+  let adoptionBookkeepingTail = false;
+  let promotedBookkeepingResult = false;
+  const promotedResultTextItemIds = new Set<string>();
+  const resetResultPhase = (): void => {
+    phaseTextSegments = [];
+    phaseTextItemIds = new Set<string>();
+    adoptionBookkeepingTail = false;
+  };
   const flushTextSegmentForPersist = (): void => {
     if (!segmentText) return;
+    const before = chatCollector.entries.length;
     chatCollector.feed({ type: "text-segment", text: segmentText });
+    phaseTextSegments.push(segmentText);
+    for (const entry of chatCollector.entries.slice(before)) {
+      if (entry.type === 'chatItem' && entry.item.type === 'chat.item' && entry.item.kind === 'text')
+        phaseTextItemIds.add(entry.item.itemId);
+    }
     segmentText = "";
   };
   let errText: string | null = null;
@@ -6484,6 +6442,10 @@ async function runActorTurnBody(
       ...(segProcessItems.length ? { process: segProcessItems } : {}),
       ...(segProduced.length ? { produced: segProduced } : {}),
     });
+    // This assistant text now belongs to a separate, actually persisted bubble.
+    // A later adoption report must not revive it in the terminal answer.
+    segmentText = "";
+    resetResultPhase();
     segState.processStart = processEnd;
     await registerFinalOutputResources(segProduced);
   };
@@ -6667,11 +6629,8 @@ async function runActorTurnBody(
           // bubble (token-by-token); other shapes feed the process
           // rail. Renderer dispatch lives in conversation.js process
           // event handler — see `data.type === 'delta'` branch.
-          // conv-core 阶段3：CLI 直连/网关共用漏斗同喂收集器——{stream:'cli'}
-          // 的 LocalEvent（tool-event 双相位）由投影器新分支转 ChatItem（含
-          // 权威 timing）；实时（ipc GroupEventChatProjector）与持久化
-          // （chatCollector）自此同源，本地 codex/opencode 过程可见与内置模型
-          // 同一套渲染语义。
+        // CLI 直连与网关事件共用收集器：LocalEvent 的 tool-event 双相位经投影器
+        // 转为带权威 timing 的 ChatItem，实时与持久化使用同一渲染语义。
           chatCollector.feed(data);
           emit(state, {
             type: "process",
@@ -6730,19 +6689,11 @@ async function runActorTurnBody(
       // P3394 外接智能体：每一轮都通过桥的出站 hub 与受管网关节点协作
       // （同一协议覆盖 Hermes/Claude Code/Codex/OpenClaw/WorkBuddy 等）。
       const isP3394Gateway = agentsFeat.isP3394GatewayAgent(cliAgent);
-      // Required-input gate（第二期收口：直连与网关两通道共用）：必填输入
-      // （如 project_dir）未满足时不派发，返回表单块由 runTerminal 提升为
-      // <agent-input-form> 询问用户。
+      // 直连与网关共用必填输入闸门；缺输入时不派发，返回表单由 runTerminal 提升为
+      // <agent-input-form>，向用户询问。
       const sharedFormBlock = await _maybeBuildCliInputForm(uid, cid, cliAgent);
-      // G-28 话题隔离（2026-09-11 停用自动注入）：此前把"当前开放的 KStar
-      // 需求 id"作为 goal 传入信封，sessionForGoal 按 (会话,对端,goal) 分
-      // P3394 会话。但 KStar 的需求粒度是"每条实质提问一个新需求"——同一
-      // 会话连问两个问题 goal 就变，G-28 退化为"每问必开新会话"，外部智能
-      // 体对几分钟前的上下文全部失忆（实测同会话三连问产生三个 P3394 会
-      // 话、三个 codex 原生 thread）。会话连续性（同会话+同对端=同一会话）
-      // 是外部协作的主目标，优先于话题隔离；sessionForGoal 的 goal 通道与
-      // runP3394GatewayTurn 的 goal 参数保留——将来 KStar 需求粒度变粗
-      // （真正的长话题）或出现显式"新话题"用户动作时，可恢复注入。
+      // 不把逐条提问生成的 KStar 需求 id 注入 goal，避免每次提问都新建
+      // P3394 会话。同一会话与同一对端保持上下文连续；goal 参数仍供显式话题隔离使用。
       const cliOut = sharedFormBlock
         ? { text: sharedFormBlock, produced: [] as string[] }
         : isP3394Gateway
@@ -6773,8 +6724,7 @@ async function runActorTurnBody(
             ...(item.execConfig?.model ? { model: item.execConfig.model } : {}),
             // goal 槽位宿主侧不注入（会话连续性优先，见上方注释）；网关
             // runP3394GatewayTurn 的 goal 参数通道保留，恢复注入时加回这里。
-            // T1 引用信封化：本轮 quote/@ 的引用快照进信封 metadata 槽位
-            //（正文文本已含 <referenced-messages> 可读版，双通道冗余供给）。
+        // 引用快照写入信封 metadata，正文仍保留 <referenced-messages> 可读版本。
             ...(item.references && item.references.length
               ? {
                   references: item.references.slice(0, 20).map((r) => ({
@@ -6787,13 +6737,8 @@ async function runActorTurnBody(
                   })),
                 }
               : {}),
-            // Prompt for the external gateway node. `sourceMessageText` is only
-            // populated for direct user messages (see enqueue); commander
-            // dispatch / handoff messages carry the full task inside the LLM
-            // payload envelope instead. G-26: keep the `<msg from=… to=…>`
-            // envelope on dispatched turns so the external agent can see who
-            // dispatched the task and who it was routed to (multi-agent
-            // routing context); direct user text stays unwrapped as before.
+        // Direct user messages use sourceMessageText. Dispatched turns retain the
+        // full <msg from=… to=…> payload so the gateway sees sender and recipients.
             prompt: [
               switchedContextDigest,
               _firstNonBlankText(
@@ -6806,8 +6751,7 @@ async function runActorTurnBody(
             onCoordinatorActivity: (event) => {
               coordinatorLease?.observe(event as never);
             },
-            // 第二期收口：网关路径同样打通 PID 通道（正整数才进内存协调器，
-            // 与直连路径同一校验）；真实网关子进程 pid 数据源后续增强。
+            // 网关与直连路径共用 PID 校验：仅正整数进入内存协调器。
             onProcessInfo: (pid) => {
               if (typeof pid === "number" && Number.isInteger(pid) && pid > 0) {
                 coordinator.setCliProcessPid(pid);
@@ -6815,13 +6759,12 @@ async function runActorTurnBody(
             },
             onProcess: forwardProcess,
           })
-        // G-19（兼容期结束）：legacy `cli` runtime 读回即迁移为 p3394-gateway
-        // （G-05 迁移器），直连执行分支已删除——此处不再有非网关路径。
+        // legacy `cli` runtime 读回即迁移为 p3394-gateway，此处不再支持直连执行。
         : await (async (): Promise<{ text: string; produced: string[]; error?: string; failureKind?: string; failureCode?: string; infrastructureFailure?: boolean; aborted?: boolean }> => {
             return {
               text: "",
               produced: [],
-              error: "p3394_gateway_unreachable: legacy direct-CLI path removed (G-19)",
+              error: "p3394_gateway_unreachable: legacy direct-CLI path removed",
               failureKind: "runtime",
               failureCode: "p3394_gateway_unreachable",
               infrastructureFailure: true,
@@ -6852,9 +6795,7 @@ async function runActorTurnBody(
       // P3394 gateway turns currently report no metrics (no runner.ts done
       // event on that path) — the read degrades to undefined there.
       cliTurnMetrics = (cliOut as { metrics?: GroupMessageMetrics }).metrics;
-      // 回读确认（CodexHost 对标的 CogSeed 适配）：CLI 自报的实际模型
-      // （usage.model）与下发值不一致时以实际值落 exec_meta——杜绝
-      // "展示 ≠ 实际"的假成功，并在日志留痕（CLI 静默换模型可观测）。
+        // CLI 自报模型与下发值不一致时，以实际值写 exec_meta 并记录日志。
       if (
         cliTurnMetrics?.model && turnExecMeta?.model &&
         cliTurnMetrics.model !== turnExecMeta.model
@@ -6868,8 +6809,7 @@ async function runActorTurnBody(
         turnExecMeta = { ...turnExecMeta, model: cliTurnMetrics.model };
       }
       if (cliOut.error) {
-        // 第二期收口对齐：用户可见的失败文案统一本地化（与直连路径同文案），
-        // 原始后端错误只进日志，不透给渲染层。
+        // 网关与直连使用同一本地化失败文案；原始后端错误只进日志。
         const failedCli = cliAgent.runtime &&
           (cliAgent.runtime.kind === "cli" || cliAgent.runtime.kind === "p3394-gateway")
           ? cliAgent.runtime.cli
@@ -6927,13 +6867,9 @@ async function runActorTurnBody(
         : null;
       const { createLifecycleSink } = await import("../execution-records");
       const { getLocalExecMode } = await import("../permissions");
-      // Vision fallback seam (2026-08-27, product call): if this turn carries
-      // images and the receiving model is KNOWN vision-incapable, the
-      // registered pluggable handler returns MODEL-FACING instructions
-      // (image facts + on-disk paths + which vision tools to call — vision
-      // model reroute / vision MCP, shape deliberately open). The model then
-      // acts on its own agency. No handler or unknown capability keeps
-      // today's pass-through behavior.
+      // Vision fallback supplies model-facing image facts and tool guidance only
+      // when this turn has images and the receiving model is known to lack vision.
+      // With no handler or unknown capability, preserve pass-through behavior.
       if (turnImages.length) {
         const { applyVisionFallbackIfBlind } = await import("../vision_fallback");
         const chatAttachments = await import("../chat_attachments");
@@ -6981,6 +6917,7 @@ async function runActorTurnBody(
         }
       }
       const executionLifecycle = createLifecycleSink(uid, {
+        ...(actor.kind === 'worker' ? { bindResultOutput: true } : { bindResultMessage: true }),
         executionId: `turn-${item.turnId}`,
         kind: "core-agent",
         sessionId,
@@ -6999,22 +6936,13 @@ async function runActorTurnBody(
         = item.execConfig?.effort
           ?? turnAgentSpec?.default_thinking
           ?? thinkingLevelForRun();
-      // Option C：只有**针对这个模型做出的显式选择**（任务级覆盖 / agent 默认）
-      // 才受"模型声明的档位"约束，且要在自动兜底**之前**记下——下面给已知
-      // reasoning 模型自动补 low 是展示兜底，不是用户的档位选择，不能被同一个门拒掉。
-      // 全局偏好（设置页的"思考强度"）是**跨模型的默认**，不是对某个模型的选择：
-      // 它越档时静默降级（pi-ai 按 provider 默认处理），绝不因此把整个回合判成
-      // model_preflight——否则用户改一次全局设置就会在若干模型上"开不了工"。
+      // 只校验针对当前模型的显式档位选择，并在自动展示兜底之前记录。
+      // 全局思考偏好是跨模型默认值，越档时按 provider 默认处理，不拒绝整个回合。
       const explicitThinkingLevel = item.execConfig?.effort
         ?? turnAgentSpec?.default_thinking
         ?? "auto";
-      // 思考展示兜底（交互设计 2026-09-08：思考过程展示需求）：'auto' 时不传
-      // thinkingLevel，pi-ai 对 openai 兼容端点不会带 reasoning_effort，
-      // DeepSeek 中转端点缺该参数时思考模式默认关闭 → 全程无
-      // reasoning_content 流（真机 18:40 轮实测 thinking_level 0 次）。
-      // 用户未显式选 off 时，对已知 reasoning 模型按 'low' 发起——思考流
-      // 可达渲染层；显式 off 仍彻底关闭。模型名识别不出 reasoning 特征
-      // 时不强行注入（避免给不认识的服务盲发参数，保持方案 C 约定）。
+      // auto 不主动设置 reasoning_effort。用户未明确选 off 且模型已知支持推理时，
+      // 用 low 使思考流可达渲染层；显式 off 保持关闭，未知模型不强行注入参数。
       if (turnThinkingLevel === "auto" && _modelSupportsThinkingByDefault(item)
         && !_targetsDeepSeekOfficialApi(uid, item.execConfig?.provider)) {
         turnThinkingLevel = "low";
@@ -7029,10 +6957,8 @@ async function runActorTurnBody(
           : turnAgentSpec?.default_model
             ? { ...turnAgentSpec.default_model }
             : undefined;
-      // Option C preflight：显式档位要先对得上有效模型声明的档位。解析出声明
-      // 才传下去（client.ts 在 provider 调用前拒绝并落 model_preflight）；
-      // 解析不出 = 不校验，行为与之前完全一致。预警同样走共用判定，避免
-      // 「日志说会拒绝、client 却放行」（例如 off 是"不发参数"，永远放行）。
+      // 仅在解析出模型声明档位后校验显式选择。预警与 client.ts 使用同一判定；
+      // off 表示不发参数，保持可用。
       const supportedReasoningLevels = explicitThinkingLevel !== "auto"
         ? await _declaredReasoningLevelsFor(uid, turnModelOverride)
         : undefined;
@@ -7043,11 +6969,8 @@ async function runActorTurnBody(
           supported: supportedReasoningLevels,
         });
       }
-      // 多模态降级提示（2026-09-13）：回合带图但实际执行模型（任务级覆盖
-      // 优先于界面选择）不支持视觉时，图片内容块会被 provider 层按
-      // input modality 丢弃，模型只能靠文件路径 + OCR 读图。此前零提示，
-      // 用户看到 OCR 误以为系统坏了。只说明原因，不改变行为——不支持
-      // 视觉的模型不发图是正确语义。
+      // 带图回合的实际模型不支持视觉时，provider 不发送图像内容；保留文件路径供
+      // 模型调用 OCR，并向用户说明降级原因。
       if (turnImages.length && turnModelOverride) {
         const { recognizeModelById } = await import("../../model/model_id_recognition");
         const bareModelId = String(turnModelOverride.model).split("/").pop() || String(turnModelOverride.model);
@@ -7078,8 +7001,7 @@ async function runActorTurnBody(
         // User-selected thinking strength ('auto' = no override; let the
         // provider default / model decide).
         ...(turnThinkingLevel !== "auto" ? { thinkingLevel: turnThinkingLevel } : {}),
-        // Option C：显式档位带着模型声明的档位一起下发，client.ts 在
-        // provider 调用前用它拒绝越档（model_preflight）。
+              // 显式档位与模型声明一并下发，由 client.ts 在 provider 调用前校验。
         ...(supportedReasoningLevels ? { supportedReasoningLevels } : {}),
         ...(turnModelOverride ? { modelOverride: turnModelOverride } : {}),
         ...(actor.kind === "agent" ? { agentId: actor.id } : {}),
@@ -7179,7 +7101,7 @@ async function runActorTurnBody(
           }
           : {}),
         ...(item.nested ? { nested: true } : {}),
-        // interrupt-steer (G9): on the top-level turn, fold user messages the
+        // interrupt-steer: on the top-level turn, fold user messages the
         // user sends mid-run into THIS run. Nested sub-runs (dispatched
         // workers) get no steer — the user can't address a worker, and their
         // synthetic queue is empty anyway.
@@ -7242,16 +7164,17 @@ async function runActorTurnBody(
         }
         // Stream events → process channel.
         if (ev.type === "final") {
-          // 消息正文只承载「最终段」（实机反馈 2026-09-09：展开执行过程
-          // 只见工具调用，AI 的中间叙述无处可见）。中间段已在被工具/
-          // 思考截断时经 flushTextSegmentForPersist 落盘为 completed text
-          // 条目、进过程轨迹（时间序交错展示）；此前正文=全文聚合，中间
-          // 段在过程区又被收尾清理，等于彻底不可见。final 段不触发 flush，
-          // 此刻 segmentText 恰为最终段；纯文本轮（无截断）segmentText=
-          // 全文、行为不变；中间有叙述但收尾无文本的轮次回退全文（保全
-          // 旧语义）。abort salvage（下方 streamingText 兜底）仍取全文。
-          const finalSeg = segmentText;
-          finalText = finalSeg.trim() ? finalSeg : (ev.text || "");
+          // 消息正文只承载最终段。被工具或思考截断的中间段通过
+          // flushTextSegmentForPersist 写为 completed text，按时间序进入过程轨迹。
+          // 纯文本轮仍以全文为最终段；收尾无文本时回退全文，abort salvage 也保留全文。
+          if (adoptionBookkeepingTail) {
+            finalText = phaseTextSegments.join('') + segmentText;
+            promotedBookkeepingResult = true;
+            for (const id of phaseTextItemIds) promotedResultTextItemIds.add(id);
+          } else {
+            const finalSeg = segmentText;
+            finalText = finalSeg.trim() ? finalSeg : (ev.text || "");
+          }
         } else if (ev.type === "delta") {
           // Pulled out of the generic branch below so we can mirror the text
           // into `streamingText` for abort-time salvage. The activity++ +
@@ -7268,7 +7191,7 @@ async function runActorTurnBody(
           // back via the dispatch tool result), so their stream is NOT surfaced
           // to the UI — otherwise each one renders as a stray "智能体" bubble with
           // a process trail. The commander's own turn is the only visible one.
-          // Named agents (kind:'agent') still stream (Option B visible bubble).
+          // Named agents (kind:'agent') still stream (visible named-agent bubble).
           if (actor.kind !== "worker") {
             emit(state, {
               type: "process",
@@ -7333,13 +7256,9 @@ async function runActorTurnBody(
               (ev as { event?: unknown }).event,
             );
             if (text) {
-              // 思考流按段续写（PR209 评审 M9）：origin:'thinking' 的
-              // progress 是 event-mapper 聚合出的思考段——续写到上一条
-              // 思考 progress（同段被多次冲刷的场景），与投影层「一次
-              // 思考一条记录」cardinality 一致；非思考 progress（retry/
-              // compaction/context_status 等）行为不变逐条 append。此前
-              // 逐条 append 时长思考（>~48KB/回合）会占满 300 上限并把
-              // 工具 chatItem 逐出。
+          // origin:'thinking' 的 progress 续写上一条思考记录，保持一次思考一条记录。
+          // retry/compaction/context_status 等其他 progress 仍逐条追加，避免长思考的
+          // 多次冲刷占满 300 条预算并挤出工具记录。
               const isThinking = (ev as { origin?: string }).origin === "thinking";
               const lastItem = processItems[processItems.length - 1];
               if (
@@ -7359,20 +7278,16 @@ async function runActorTurnBody(
                 appendProcessItem(processItems, item);
               }
             }
-            // 只在思考文本（真正的段落截断）前 flush 中间段；usage/runtime
-            // 等收尾事件跟在最终段后面，flush 会把最终段（=消息正文，
-            // 可能含 :::dashboard 等结构指令）误当中间段落落盘——重放
-            // 面板以纯文本显示源码、与正文重复（真机踩坑 2026-09-08）。
+            // 只在思考文本造成真正段落截断前 flush。usage/runtime 等收尾事件不能
+            // 把最终段再次写进过程轨迹，否则重放会与正文重复。
             if (text) flushTextSegmentForPersist();
             chatCollector.feed({ type: "progress", text: text || "" });
           } else if (ev.type === "event") {
             const event = processEventForPersistence(
               (ev as { event?: unknown }).event,
             );
-            // CLI 回合剥除 usage（交互设计 2026-09-09：外接 CLI 的 token 输入/
-            // 输出/缓存命中先不显示——CLI 自报口径不可靠，计费输出≠可见
-            // 输出、可见输出无真值，缓存命中更是无从核对）。时间线 usage
-            // 行与持久化条目一并不产；时长/首 token（本地墙钟）不受影响。
+            // CLI 自报 token/缓存口径不可核对，因此不生成 usage 行或持久化条目。
+            // 本地墙钟测得的时长与首 token 时间保持不变。
             const suppressCliUsage = !!cliAgent && event?.stream === "usage";
             if (event && event.stream !== "assistant" && !suppressCliUsage) {
               appendProcessItem(processItems, { type: "event", event });
@@ -7381,7 +7296,21 @@ async function runActorTurnBody(
             // 工具事件（stream==='tool'）截断正文段落——它前面的文本是
             // 中间段，flush；usage/runtime 等非工具事件不 flush（防最终段
             // 被误落盘）。
-            if (event && event.stream === "tool") flushTextSegmentForPersist();
+            // Adoption reporting is bookkeeping for the answer already streamed,
+            // not a new task-output segment. A model may finish that call with
+            // only an actor-result control marker; flushing here would leave the
+            // actual answer only in the process rail and persist an empty reply.
+            // Keep every other tool boundary (reads, writes, approvals, dispatch)
+            // unchanged. The report's excerpt never supplies or repairs text.
+            const toolName = event?.data && typeof event.data === "object"
+              ? (event.data as { name?: unknown }).name : undefined;
+            if (event && event.stream === "tool") {
+              if (toolName === "report_ability_asset_usage") adoptionBookkeepingTail = true;
+              else {
+                flushTextSegmentForPersist();
+                resetResultPhase();
+              }
+            }
             if (event && !suppressCliUsage) chatCollector.feed({ type: "event", event });
           }
           // See the delta branch: anonymous workers don't surface to the UI.
@@ -7412,7 +7341,7 @@ async function runActorTurnBody(
       // `streamingText` holds whatever the renderer was already rendering.
       // Push it into finalText so plan_executor's abort branches can preserve
       // it instead of throwing away visible work as a bare "(stopped)" stub.
-      if (!finalText && streamingText) {
+      if (!finalText && streamingText && (!promotedBookkeepingResult || aborted)) {
         finalText = streamingText;
       }
       // NOTE: `w.running` is owned by `runWorkerLoop` — it stays `true`
@@ -7731,7 +7660,7 @@ async function runActorTurnBody(
               // Space-scoped conv: auto-add the new agent to the space's
               // extra_agents so it's actually reachable from this conversation
               // (commander picker filters by the space scope; LLM dispatch is
-              // gated by the same space scope per CLAUDE.md §6).
+              // gated by the same space scope).
               // Without this hop the user creates an agent and immediately
               // can't @-mention it from the same conv — observed bug shape
               // when the space predates the new agent.
@@ -8026,7 +7955,7 @@ async function runActorTurnBody(
   // (text streamed since the last flush) — else reload duplicates earlier
   // segments. If that tail is empty and nothing else needs surfacing, go silent
   // so no empty commander bubble is persisted.
-  if (segState.flushedAny && outcome.kind === "persist") {
+  if (segState.flushedAny && outcome.kind === "persist" && !promotedBookkeepingResult) {
     const tail = streamingText.slice(segState.segStart);
     const hasSide = !!(
       outcome.form ||
@@ -8085,7 +8014,7 @@ async function runActorTurnBody(
     outcome = { kind: "persist", text: "" };
   }
 
-  // G8b ephemeral worker: produces NO user-visible bubble. Its entire output
+  // Ephemeral worker: produces NO user-visible bubble. Its entire output
   // is handed back to the commander below (read from `workingText`), so force
   // silent here to skip the user-facing persist. The worker is internal — the
   // user sees the commander's synthesis, not the raw worker turn.
@@ -8112,21 +8041,10 @@ async function runActorTurnBody(
   }
 
   let persistedMsg: GroupMessage | null = null;
-  let finalOutputForUsage = '';
   if (outcome.kind === "persist") {
-    finalOutputForUsage = outcome.text;
-    if (!outcome.failureKind && !errText && !aborted && turnAssetUsageClaims.length) {
-      const { countClaimsMissingFromFinalOutput } = await import('../recall/asset-usage-claim');
-      if (countClaimsMissingFromFinalOutput(turnAssetUsageClaims, finalOutputForUsage) > 0) {
-        outcome.text = [outcome.text, t('recall.usage_claim_output_missing_notice')].filter(Boolean).join('\n\n');
-      }
-    }
-    // Task 5: usage/timing metrics for this settled reply. CLI turns arrive
-    // fully assembled from _runCliAgentTurn (runner attaches startedAt /
-    // firstTokenAt to the terminal done event); internal model turns rebuild
-    // them from the agent_run_result payload — duration_ms anchors startedAt,
-    // first_token_ms anchors firstTokenAt relative to it. Fields the source
-    // didn't report are omitted, never fabricated.
+    // Settled reply metrics: CLI timing comes from the runner; model turns use
+    // agent_run_result. Anchor duration and first-token timing to completedAt,
+    // and omit fields the source did not report.
     let replyMetrics: GroupMessageMetrics | undefined;
     if (cliTurnMetrics) {
       // CLI 回合同上剥 usage：消息 metrics 只保留本地计时（时长/首
@@ -8157,8 +8075,7 @@ async function runActorTurnBody(
         usageOut.cacheReadTokens = usageIn.cacheReadTokens;
       if (typeof usageIn?.cacheWriteTokens === "number")
         usageOut.cacheWriteTokens = usageIn.cacheWriteTokens;
-      // lastCallUsage（2026-09-11）：占用口径，嵌套对象原样透传（白名单在
-      // client.ts 的 safeUsageForLog 一侧完成）。
+      // lastCallUsage 按占用口径透传，白名单在 client.ts 的 safeUsageForLog 校验。
       if (
         usageIn?.lastCallUsage && typeof usageIn.lastCallUsage === "object"
       ) {
@@ -8196,18 +8113,12 @@ async function runActorTurnBody(
       ...(citation.matchScore !== undefined ? { match_score: citation.matchScore } : {}),
       match_method: citation.matchMethod,
     }));
-      // R-11 gate (decision 2026-10-13): never present this as the end of the
-      // turn while the actors this run dispatched are still running. The commander
-      // waits for them and reports once they finish — recordMemberRunTurnResult
-      // then wakes it for exactly one reporting round, and that turn ends
-      // normally. Without this gate the user reads a finished answer while workers
-      // still spin, which is the 2026-10-12 shape (commander concluded 17:13,
-      // literature-review worker still running).
+      // While dispatched actors are pending, this is an interim answer.
+      // recordMemberRunTurnResult wakes the commander for one reporting round
+      // after all actors finish; that round can close the turn.
       let awaitingDispatchedActors: string[] = [];
-      // The commander's own turn is not always tagged with the run: on
-      // 2026-10-13 the run belonged to the dispatch (mentions: 0), so requiring
-      // `item.runId` here skipped the gate exactly when it was needed. Fall back
-      // to the run this conversation is currently tracking.
+      // A dispatch may own the run even when the commander's item has no runId.
+      // Fall back to the run this conversation is currently tracking.
       const gateRunId = item.runId || state.memberRunId;
       if (gateRunId && actor.kind === 'commander') {
         try {
@@ -8272,7 +8183,8 @@ async function runActorTurnBody(
         ? { projection_receipt: w.projectionReceipt }
         : {}),
       ...((tailProcessItems.length || chatCollector.entries.length)
-        ? { process: mergeProcessTrail(tailProcessItems, chatCollector.entries) }
+        ? { process: mergeProcessTrail(tailProcessItems, chatCollector.entries.filter(entry => !(entry.type === 'chatItem'
+          && entry.item.type === 'chat.item' && promotedResultTextItemIds.has(entry.item.itemId)))) }
         : {}),
       // Unified execution entry: persist what actually ran on this turn.
       ...(turnExecMeta ? { exec_meta: turnExecMeta } : {}),
@@ -8283,7 +8195,7 @@ async function runActorTurnBody(
       // consumes the streaming placeholder + finalizes in place. Without
       // this flag, mid-turn tool-emitted messages (plan_executor's
       // dispatch) would also wrongly consume the placeholder.
-      // R-11: with actors still pending this is an interim answer, not the
+      // With actors still pending this is an interim answer, not the
       // end of the turn; the reporting round after the last worker closes it.
       turn_end: awaitingDispatchedActors.length === 0,
       ...(item.runId ? { runId: item.runId } : {}),
@@ -8315,7 +8227,7 @@ async function runActorTurnBody(
         log.warn(`Recall usage persistence partially failed cid=${cid} failed=${failedUsageWrites.length}`);
       }
       const { recordInjectionReceipt } = await import('../recall/injection-receipt');
-      // 「为什么排前」拆解随回执留痕（specs/012 T019）：拆解只出自当轮目录
+      // 「为什么排前」拆解随回执留痕：拆解只出自当轮目录
       // 构建的那一次 rankAssets（asset-catalog-hint 按 userId+cid 记住的
       // ranked 视图，见上方 catalog 调用同键）——这里查表透传，不在写侧
       // 重算（排序唯一处）。资产不在当轮 ranked 视图里时不带 ranking，
@@ -8343,8 +8255,7 @@ async function runActorTurnBody(
       try {
         const { finalizeAssetUsageClaims } = await import('../recall/asset-usage-claim');
         await finalizeAssetUsageClaims(uid, {
-          taskRunId: item.turnId, messageId: persistedMsg.id,
-          finalText: finalOutputForUsage, claims: turnAssetUsageClaims,
+          cid, taskRunId: item.turnId, messageId: persistedMsg.id, claims: turnAssetUsageClaims,
         });
       } catch {
         log.warn('asset-specific adoption persistence failed; final message preserved');
@@ -8360,13 +8271,13 @@ async function runActorTurnBody(
         log.warn('ontology usage persistence failed; final message preserved');
       }
     }
-    // 画像通道落账（2026-09-13 通道显式化 / 2026-09-30 修2）：回执逐条留
+    // 画像通道落账：回执逐条留
     // 痕；正式资产镜像（非 onto-*）同口径计入 usage——「画像不是资产」的
     // 旧口径只适用于已废弃的文件回退形态，统一入口见
     // injection-receipt.ts::recordProfileMemoryInjection。
     if (recallProfileMemory.length) {
       const { recordProfileMemoryInjection } = await import('../recall/injection-receipt');
-      // P-r1-91 bus 侧容错：画像通道落账失败不阻断回合收尾——一条坏记录/瞬时
+      // 画像通道落账失败不阻断回合收尾——一条坏记录/瞬时
       // IO 错上抛会把整批画像收据+usage 记账一起丢掉、已持久化的回合被误标
       // failed、后面的漏取审计也被跳过。与上方 usage/回执的 allSettled、下方
       // 漏取审计的 try/catch 同口径：warn 留痕后继续。
@@ -8379,9 +8290,8 @@ async function runActorTurnBody(
         log.warn(`Recall profile-memory persistence failed cid=${cid} error=${(error as Error).message}`);
       }
     }
-    // 漏取审计（2026-09-19）：目录标了★（提示模型"这些相关"）但本回合既没
-    // 注入也没被模型取用/派发的资产——每条记一条 omitted/catalog_hint 回执，
-    // 时间线透出"相关而未被用"。判断质量可见可追责，不替模型做决定。
+        // 目录标了相关但本回合未注入、读取或派发的资产，各记 omitted/catalog_hint
+        // 回执；时间线呈现该差集，不替模型作选择。
     if (catalogRelevantIds.size > 0) {
       try {
         const usedThisTurn = new Set<string>(persistedRecallCitations.map((citation) => String((citation as { asset_id?: string }).asset_id || (citation as { assetId?: string }).assetId || '')));
@@ -8408,10 +8318,8 @@ async function runActorTurnBody(
         // 审计是增强：写不进不影响回合。
       }
     }
-    // 派发授权资产的账（usage + 注入回执）在本回合末尾统一结算（见下方
-    // dispatchedUsage 段）：匿名 worker 走 silent 分支、没有持久化消息，
-    // 此前账写在 visible 分支里 → 授予过的资产从不进使用记录/升档链
-    // （2026-09-18 修）。这里只把消息 id 留给结算用。
+      // 派发资产按回合统一结算；匿名 worker 没有持久化消息，不能依赖 visible 分支。
+      // 这里只保留实际持久化的消息 id，供收尾结算使用。
     dispatchedMessageId = persistedMsg.id;
     await registerFinalOutputResources(outcome.produced || []);
   } else if (outcome.kind === "silent" && actor.kind !== "worker") {
@@ -8433,10 +8341,8 @@ async function runActorTurnBody(
     });
   }
 
-  // 派发授权资产的结算（2026-09-18 从 visible 分支移出）：Commander 授予的
-  // 资产与宿主注入共用一个使用账本（injected=宿主带入 / dispatched=派给 Agent），
-  // 但匿名 worker 回合是 silent、没有持久化消息——账必须按回合结算，不能挂在
-  // UI 分支上，否则"授予了却从不进统计/升档链"。messageId 只有 visible 回合有。
+    // 派发与宿主注入共用使用账本，分别记 dispatched 与 injected。匿名 worker 的
+    // silent 回合也要结算；仅 visible 回合提供持久化 messageId。
   if (dispatchedUsage.length) {
     const dispatchedWrites = await Promise.allSettled(dispatchedUsage.map((grant) => recordRecallUsage(uid, {
       assetId: grant.assetId,
@@ -8466,10 +8372,26 @@ async function runActorTurnBody(
   if (persistedMsg && outcome.kind === 'persist' && !outcome.failureKind && !errText && !aborted) {
     try {
       const { checkPersistedCognitionOutput } = await import('../recall/cognition-output-check');
+      const currentTaskText = String(item.sourceMessageText || item.llmPayload || '');
+      // A newly opened requirement usually repeats this exact user message.
+      // Keep one original copy so literal task evidence remains unambiguous;
+      // a genuinely different goal and follow-up must both remain available.
+      const outputCheckTaskText = recallTaskGoal.trim() === currentTaskText.trim()
+        ? currentTaskText
+        : [recallTaskGoal, currentTaskText].filter(Boolean).join('\n');
       await checkPersistedCognitionOutput(uid, { cid, taskRunId: item.turnId, messageId: persistedMsg.id,
-        taskText: [recallTaskGoal, String(item.sourceMessageText || item.llmPayload || '')].filter(Boolean).join('\n') });
+        taskText: outputCheckTaskText });
     } catch {
       log.warn('cognition result check unavailable; successful reply preserved');
+    }
+  }
+
+  if (actor.kind === 'worker' && !errText && !aborted && workingText.trim()) {
+    try {
+      const { bindExecutionResultOutput } = await import('../recall/execution-result-content');
+      await bindExecutionResultOutput(uid, `turn-${item.turnId}`, cid, actor.id, workingText, produced);
+    } catch (error) {
+      log.warn('anonymous execution result binding unavailable', { error: logErrorRef(error) });
     }
   }
 
@@ -8491,18 +8413,9 @@ async function runActorTurnBody(
     }
   }
 
-  // 回合收尾：把本回合的 ContextReuseReceipt 从 prepared 收成终态。
-  //
-  // **为什么必须做**：注入处只 prepare，从来没有人 complete，于是所有群聊回执
-  // 永远停在 prepared——「资产被带进去了」有记录，「这次复用真的执行完了」没有。
-  // 成熟度之所以还能升，只是因为升档判定放宽到「非 rejected 即可」；那层宽容
-  // 一旦收紧，整条证明链会静默断掉。
-  //
-  // **状态取值**：注入发生在回合开始，所以只要回合跑起来了，"加载"这件事就是
-  // 真的。回合本身失败/被中断，改变的是这次运行的质量，不是"有没有加载过"——
-  // 所以取 degraded 而不是 rejected。rejected 的语义是"这次复用被拒绝/无效"，
-  // 用在这里会让终态证明把本来算数的加载证据丢掉（collectLoadedAssetsFromReceipts
-  // 按 status==='rejected' 过滤）。任务级别的成败由 terminal-proof 另行判定。
+    // 回合结束时将实际 prepare 的 ContextReuseReceipt 收为终态。
+    // 失败或中断不抹除已发生的加载，记 degraded 而非 rejected；rejected 仅表示
+    // 复用被拒绝或无效。任务级成败另由 terminal-proof 判定。
   if (turnReuseReceiptPrepared) {
     try {
       const { completeReceipt } = await import("../p3394/context-reuse-receipt");
@@ -8521,9 +8434,8 @@ async function runActorTurnBody(
   }
 
   // Expert-signals: drain skill_advertised / skill_invoked using the
-  // persisted msg id as turn_id (per turn_id convention — see
-  // PC/CLAUDE.md §4 constraint 9 + expert-signals plan §3.4). Silent
-  // turns drop the buffer; CLI agents bypass SkillLoader so the buffer
+  // persisted msg id as turn_id. Silent turns drop the buffer;
+  // CLI agents bypass SkillLoader so the buffer
   // is empty for them and the drain is a no-op.
   if (persistedMsg) {
     skillBuffer.drainAndEmit({
@@ -8535,11 +8447,9 @@ async function runActorTurnBody(
       errText: errText || undefined,
       aborted,
     });
-    // Phase-0 chokepoint (was lost from commit 76358a8e per
-    // `docs/plans/expert-signals-phase0-wiring-gaps.md`): caches agent msg
-    // for the next user-reply text-signal JOIN, emits tool_failure when
-    // errText is set, schedules silence check (cancelled by onUserMessage
-    // when the user replies). Sync + self-guarded against errors.
+    // Cache the agent message for the next user-reply text-signal JOIN,
+    // emit tool_failure when errText is set, and schedule a silence check
+    // cancelled by onUserMessage when the user replies. Sync and self-guarded.
     onAgentTurnEnd({
       uid,
       cid,
@@ -8656,10 +8566,7 @@ async function runActorTurnBody(
 
   // 状态由**记录**决定，不由模型的话决定：模型可以自称 waiting_input，但若这条
   // 等待所依据的唤醒请求已经有结论（approved/executed/rejected/expired），那这个
-  // "等用户"就是陈旧的。真机 2026-10-14 16:24（cid 38591293f03a）：唤醒 16:24:21
-  // 批准 + 工人 16:24:31 交付，commander 回合 16:24:36 才落盘并自称 waiting_input
-  // → 任务被打成 waiting_user 永久留在待办，R-11 汇报回合也不再触发（同一次运行
-  // 的 run_summary 写的是 completed）。只复核**模型自称**的等待；真表单
+  // "等用户"就是陈旧的。只复核模型自称的等待；真实表单
   // （form / planInteraction === "open"）是货真价实的等人输入，不在复核范围。
   const declaredWaitIsStale =
     !aborted &&
@@ -8678,13 +8585,9 @@ async function runActorTurnBody(
           (outcome.kind === "persist" && !!outcome.failureKind)
         ? "failed"
         : "completed";
-  // conv-core 存储补差（真机踩坑 2026-09-08）：主回合路径此前从不调用
-  // chatCollector.finish——历史消息 process 只有 chatItem 条目、没有 turn
-  // 终态条目，历史重放拿不到权威终态/总耗时（面板徽章无耗时、失败回合
-  // 无 failed 依据）。runActorTurn wrapper 的 finish 只覆盖嵌套派发路径。
-  // ChatTurnTerminalStatus 与 TaskTerminalStatus 的 waiting_input 在
-  // chat_events 契约里不存在——等待输入对过程面板而言是暂停而非终态，
-  // 映射为 completed（面板收尾，等待卡片由 interaction 层另管）。
+    // 主回合和嵌套回合都要完成 chatCollector，以供历史重放读取终态与总耗时。
+    // chat_events 没有 waiting_input 终态：过程面板按 completed 收尾，等待卡由
+    // interaction 层继续管理。
   chatCollector.finish(
     terminalStatus === "cancelled" ? "cancelled"
       : terminalStatus === "failed" ? "failed"
@@ -8748,21 +8651,13 @@ export async function _buildActiveSharedTaskContextBlockForTest(
 }
 
 /**
- * 记一张 ContextReuseReceipt：这个 Agent 出生时继承的认知，本轮被真实注入了哪几条、
- * 哪几条没带上、各是什么原因。这是 `资产 → 出生继承 → 复用` 的最后一跳，也是
- * 履历页 use 段与 evidence 段唯一的数据来源。
+ * Record the cognition inherited by this Agent and actually injected this turn,
+ * plus omitted entries and their reasons, for the lineage and evidence views.
+ * Use the real `turn-<turnId>` execution identity so the receipt points to an
+ * existing execution record. A retry may find the same receipt already present.
  *
- * **execution id 用本轮真实的 `turn-<turnId>`**，与 `execution-records` 写的执行
- * 记录同名、落在同一个目录里。早先版本自造过 `exec-inherit-<hash>` 合成 id 来做
- * 幂等，真机重启后暴露出问题：回执落在一个没有 `record.json` 的目录里，执行记录
- * 扫描器每次启动都反复 warn，而且语义上回执挂在了一次并不存在的执行上——回执
- * 本该是某次真实执行的凭证。噪音该在展示层处理，不该靠编造 id。
- *
- * 同一轮重试会撞上「已存在」，那是预期结果，不是错误。
- *
- * 状态停在 `prepared`：它如实表示「这一轮把这些认知带进去了」，不表示模型真的
- * 用上了、更不表示用了有帮助。DELIVERED / LOADED / USED / PROVED_USEFUL 是四件
- * 不同的事，这里只落得起第二件。
+ * prepared proves loading, not adoption or usefulness. Turn finalization owns
+ * completion; delivery, loading, use and effectiveness remain distinct evidence.
  */
 /** @returns 是否真的落下了一张 prepared 回执——回合收尾要据此决定是否 complete。
  *  同一回合 Commander 投影可能已经建过 `turn-<turnId>`，这里拿到 'already
@@ -9037,7 +8932,7 @@ function appendLanguageDirective(prompt: string): string {
 //   `  inputs: read agent.json before dispatch`
 //   `  interactive: true`
 //
-// Why expose id and ROOT inline (changed 2026-05): the prior layout hid
+// Why expose id and ROOT inline: the prior layout hid
 // agent_id (to discourage hex-id leak in user prose) and put paths in a
 // separate `## Resource locations` section. That forced commander to run
 // `search_files` for the matching agent.json, extract id from the dir
@@ -9675,7 +9570,7 @@ async function startPreparedNestedDispatchForTool(
   prepared: PreparedNestedDispatchStep,
   runId?: string,
 ): Promise<{ content: string } | null> {
-  // 顺序强约束（设计 §4.4）：本条提交要求按点名顺序协作时，启动依赖步骤之前
+  // 顺序强约束：本条提交要求按点名顺序协作时，启动依赖步骤之前
   // 校验依赖图；不满足就**不启动**，把原因交回协调者纠正，而不是静默并行执行。
   const sequentialBlock = await _guardSequentialPlanBeforeStart(
     state,
@@ -9716,7 +9611,7 @@ async function _guardSequentialPlanBeforeStart(
       agent_id: step.actor_id || '',
       depends_on: step.depends_on || [],
     }));
-    // 逐步启动校验（2026-09-20 复盘 21:34 误拦后）：只看"这一步该不该放行"，
+    // 逐步启动校验：只看"这一步该不该放行"，
     // 不再用完整计划链去卡第一步。
     const verdict = prepared.step.group_chat_run_id !== runId
       ? {
@@ -9884,7 +9779,7 @@ async function gateNestedAgentWake(
   if (actor.kind !== "agent" || allowLegacyGroupChatFormalAgentExecutorForTest())
     return null;
 
-  // Membership rule (requirement owner, 2026-10-13): an agent that has ALREADY
+  // Membership rule: an agent that has ALREADY
   // joined this conversation is woken directly — a repeat @ of a known member is
   // unambiguous. The FIRST time an agent enters the conversation, approval is
   // required as before. Membership is therefore the criterion, not the run: the
@@ -9892,10 +9787,7 @@ async function gateNestedAgentWake(
   // the member table is written when the user approves the first wake. Failing to
   // read members falls through to the gate, i.e. fails closed.
   try {
-    // The run record already knows who this run is about (`member_agent_ids`),
-    // and the 21:49 run logged `members: 1` — so consult it first: the member
-    // *file* read below needs the conversation's project hint, and passing null
-    // silently missed the member on 2026-10-13 (wake prompt still appeared).
+    // Check the run's member_agent_ids before reading conversation membership.
     if (runId) {
       const { readRun } = await import("./run_store");
       const run = await readRun(state.uid, state.cid, runId);
@@ -9909,9 +9801,7 @@ async function gateNestedAgentWake(
         return null;
       }
     }
-    // Membership must be read with the conversation's project hint: passing null
-    // looked at the wrong layout on 2026-10-13 and missed an agent that had
-    // already joined, so the wake prompt appeared again.
+    // Membership must use the conversation's project hint to resolve its layout.
     const chatsFeature = await import("../chats");
     const conversation = await chatsFeature.getConversation(state.uid, state.cid).catch(() => null);
     const members = await readMembers(state.uid, state.cid, conversation?.project_id ?? null);
@@ -10022,7 +9912,7 @@ export function _redactDispatchToolResult(inner: unknown): void {
 
 /** Wrap a sub-actor's reply + produced files as the `<worker-result>` block the
  * commander reads back. Single source for both the async handback wake and the
- * G8d in-process nested dispatch, so the format the commander parses never
+ * in-process nested dispatch, so the format the commander parses never
  * drifts between the two. */
 export type NestedDispatchOutcome =
   | {
@@ -10350,14 +10240,14 @@ function extractBlockedFormFromWorkerResult(
   return { form_id: formId, agent_id: agentId };
 }
 
-/** G8d step 3: run a dispatched sub-actor's turn IN-PROCESS, synchronously,
+/** Run a dispatched sub-actor's turn IN-PROCESS, synchronously,
  * inside the caller's (commander's) turn, and return its result as a
  * `<worker-result>` block — the dispatch tool returns this as its tool result,
  * so the commander's stream resumes with the sub-run's full reply in context.
  * This is the single-layer replacement for the old stage → turn-end flush →
  * async worker → `wakeWithWorkerResult` re-wake: the handback IS the tool
  * result. The sub-run is `nested` (skips the global concurrency slot the caller
- * already holds — charter §6) and chains its abort to the caller's tool signal
+ * already holds) and chains its abort to the caller's tool signal
  * so a group abort cascades into it. NOT registered in `state.workers`: it is a
  * transient sub-turn, not a scheduled roster worker. */
 async function runNestedDispatch(
@@ -10514,9 +10404,9 @@ async function runNestedDispatch(
     ...(runId ? { deferRunTerminal: true } : {}),
   };
   // Bound concurrent nested dispatches: when the commander fans out several
-  // run_worker/dispatch_to calls in one turn (G4 runs them concurrently),
+  // run_worker/dispatch_to calls concurrently in one turn,
   // dispatchSlots caps how many actually run at once — the bound that replaces
-  // the global slot these nested runs skip (charter §6/§9). Acquired only here
+  // the global slot these nested runs skip. Acquired only here
   // (the commander dispatches; workers/agents have no dispatch tools), so it is
   // never re-entrant → no deadlock.
   const [, releaseDispatch] = await dispatchSlots.acquire();
@@ -11626,25 +11516,14 @@ function _toolError(error: string): { content: string; isError: true } {
 
 
 /**
- * Deterministic host routing (the fix for model-dependent routing): when a
- * USER message is detected as a task, the HOST opens the governed KStar task
- * and auto-confirms the projection BEFORE the Commander even starts — no
- * reliance on the model emitting kstar_control with correct args (which
- * failed live twice with empty payloads). The Commander's only remaining
- * KStar responsibility is commit_forecast (the prediction itself), enforced
- * by the guard + next_step contract.
- *
- * Zero-write guarantee preserved: greetings/status/trivia are not tasks, and
- * an already-open task is never duplicated.
+ * The host opens a detected task and confirms its projection before the model
+ * turn; routing does not rely on the Commander constructing control payloads.
+ * The forecast guard still governs privileged execution. Greetings, status and
+ * trivia write no task state, and an already-open task is not duplicated.
  */
-/** Parse the Commander's routing judgement:
- *  `<kstar-judge>{"is_task":true|false,"continuation":true|false}</kstar-judge>`.
- *  Returns null when absent/malformed. Tolerant of bare JSON output too —
- *  the historical prompt said "no markdown / plain JSON" while the parser
- *  only accepted the tagged form, so EVERY live routing judgement silently
- *  failed and no task was ever opened. Accept both shapes, plus the wrapped
- *  `{"kstar-judge":{"is_task":...,"continuation":...}}` shape some models
- *  produce when they read the tag name as a JSON key. */
+/** Parse the Commander's routing judgement in tagged or bare JSON form.
+ *  Also accept {"kstar-judge":{...}} and {"kstar_judge":{...}} wrappers.
+ *  Return null when the verdict is absent or malformed. */
 export function parseContinuationJudgement(text: string | undefined): { isTask: boolean; continuation: boolean } | null {
   const raw = String(text || '').trim();
   const tagged = raw.match(/<kstar-judge>\s*([\s\S]*?)\s*<\/kstar-judge>/);
@@ -11716,22 +11595,14 @@ type ModelRoutingJudgeOutcome =
   | { status: 'failed'; reason: 'timeout' | 'runner_error' | 'unparsable' | 'exception' };
 
 /**
- * Model-judged routing (mixed deterministic + model): for any non-trivial
- * user message, a dedicated runner (NOT the busy commander turn — a bus
- * enqueue would deadlock because the current turn holds the queue) judges
- * whether the message is a task and, when one is open, whether it continues
- * it. Returns a discriminated outcome so the caller can tell "the model said
- * no" apart from "we never got an answer".
+ * A dedicated runner judges task intent and continuation with conversation
+ * context; enqueueing this call through the busy Commander would deadlock.
+ * Distinguish an explicit non-task verdict from an unavailable verdict.
  *
- * No wall-clock ceiling here, deliberately: the two real guards on an LLM call
- * are the model-call idle watchdog (`client.ts`, 1800s with no event) and the
- * SDK timeout, and AGENTS.md forbids adding a separate total wall-clock
- * timeout. A 20s cap used to sit on this call, which was both inconsistent
- * (the main turn has none) and harmful in the direction that matters: a slow
- * provider failed the judge while the turn it was gating would have
- * succeeded, costing that message its governance. The judge passes no external
- * abort signal, so an `error.kind === 'timeout'` on its result can only be the
- * idle watchdog.
+ * The model-call idle watchdog and SDK timeout govern the call. Do not add a
+ * separate total wall-clock ceiling: a slow provider must not lose task routing
+ * while its normal model turn can still succeed. No external abort signal is
+ * passed, so a returned timeout is attributable to the idle watchdog.
  */
 async function judgeModelRouting(
   uid: string,
@@ -11743,12 +11614,8 @@ async function judgeModelRouting(
     const verdict = await _hostRoutingJudgeForTest(newMessage, openRequirement);
     return verdict ? { status: 'verdict', verdict } : { status: 'failed', reason: 'runner_error' };
   }
-  // A0 instrumentation: the judge sits on the critical path (the main turn
-  // cannot start until the verdict lands), yet it previously logged only a
-  // total. Split it so the cost model is measurable before optimising:
-  //   auth   — dynamic import + configured-model check
-  //   build  — buildRunner (module load, session, skill block, tool assembly)
-  //   run    — the provider round trip
+  // Measure auth resolution, runner construction and provider execution
+  // separately so routing critical-path cost can be attributed accurately.
   const startedAt = Date.now();
   let authMs = 0;
   let buildMs = 0;
@@ -12165,16 +12032,11 @@ const DISPATCHED_ASSET_ERRORS = Object.freeze({
 });
 
 /**
- * Validate an explicit cross-Agent asset grant before the live runtime gate.
- *
- * 2026-09-18 放宽（模型自选 / 目录化）：不再要求"必须是已确认投影的子集"——
- * 资产只要存在、可读、过运行时准入门就能授予。模型现在能看全量目录
- * （search_ability_assets 目录模式），挑选权归模型；旧的子集限制会让
- * "目录里看得见、却派不出去"。版本按读取时刻的在用版写进回执（与既有
- * dispatched 回执同一口径）。
- *
- * 保留的不变量：形状、24 条上限、可读/授权、运行时准入门，以及"错误文案
- * 稳定且绝不回显任何 id"——Commander 不能把授权失败当资产枚举 oracle 用。
+ * Validate a model-selected asset grant by shape, 24-item limit, current
+ * readability/authorization and runtime admission. The model may choose from
+ * the available catalog; a grant need not be a confirmed-projection subset.
+ * Bind the in-use version at read time. Stable errors never echo asset ids,
+ * preventing denied grants from becoming an enumeration oracle.
  */
 async function resolveDispatchedAbilityAssets(
   uid: string,
@@ -12507,13 +12369,9 @@ async function buildCommanderExtraTools(
   const { getConversationWorkspacePath } = await import("./conv_workspace");
   const coordinatorWorkingDir = await getConversationWorkspacePath(uid, cid);
   const tools: AgentTool[] = [];
-  // NOTE: kstar_control is intentionally NOT in the Commander's tool surface.
-  // The world model owns the whole governed lifecycle: host routing opens
-  // task + projection, and auto-forecast generates the prediction over the
-  // committed projection knowledge. The Commander's only duty is executing
-  // the work; asking it to emit nested JSON lifecycle payloads is what
-  // produced the repeated live failures (stringified forecast, flattened
-  // candidates, guessed runtime ids).
+  // kstar_control is not exposed to the Commander. Host routing opens tasks and
+  // projections, and auto-forecast uses committed projection knowledge. The
+  // Commander executes the work rather than constructing lifecycle payloads.
   tools.push({
     name: "auto_tasks_list",
     description: [
@@ -12762,10 +12620,8 @@ async function buildCommanderExtraTools(
 
   tools.push(buildSkillSearchTool(uid));
 
-  // 模型自选挂载（2026-09-18）：模型看过目录/取过正文后，把"这次任务要用的
-  // 资产"挂到当前任务上——创建（或复用）一条 authorization='model_selected'
-  // 的 confirmed 投影，并在会话里投一张可撤销的卡。基线（宿主自动投影）不动：
-  // 这是"追加"，不是替换（子安拍板：原算法保留 + 模型自选，两者结合）。
+    // 模型明确选择的资产追加到当前任务的 model_selected confirmed 投影，并向用户
+    // 提供可撤销卡片；保留宿主自动投影，不替换它。
   tools.push({
     name: "attach_assets_to_task",
     description: [
@@ -12811,12 +12667,9 @@ async function buildCommanderExtraTools(
           if (!safeId(assetId)) return _toolError("invalid ability asset id");
           const asset = await readAbilityAsset(uid, assetId).catch(() => null);
           if (!asset) return _toolError(DISPATCHED_ASSET_ERRORS.unauthorized);
-          // 与派单/读取同一道运行时准入门。软提示不做否决（2026-09-18 真机修正）：
-          // applicableWhen 是给宿主自动注入用的软闸，模型已在目录里看过它并明确
-          // 点名——用一段由模型自己写的 reason 去词面匹配软闸，只会把功能拒死
-          // （真机实测：模型挂载被 "Ability asset is not allowed for this dispatch"
-          // 挡下）。硬闸照旧：状态 / 来源撤权 / scopePolicy / 禁用场景 / 敏感度 /
-          // targetAgents。
+          // 模型明确点名后的授予不再用 applicableWhen 软提示否决；该软闸用于宿主
+          // 自动注入。状态、来源撤权、scopePolicy、禁用场景、敏感度与 targetAgents
+          // 等硬闸仍由同一运行时入口校验。
           const gate = await evaluateRecallAssetRuntimeEligibility(uid, asset, {
             ...currentRecallScope,
             purpose: reason || "model_selected",
@@ -13065,7 +12918,7 @@ async function buildCommanderExtraTools(
 
   tools.push({
     name: "dispatch_to",
-    // Parallel-safe: independent dispatches in one turn run concurrently (G4),
+    // Parallel-safe: independent dispatches in one turn run concurrently,
     // bounded by dispatchSlots. Nested runs skip the global slot + use distinct
     // sessions; member-seed + jsonl-append are lock-serialized.
     executionMode: "parallel",
@@ -13683,7 +13536,7 @@ async function buildCommanderExtraTools(
 
   tools.push({
     name: "run_worker",
-    // Parallel-safe: independent sub-tasks in one turn run concurrently (G4),
+    // Parallel-safe: independent sub-tasks in one turn run concurrently,
     // bounded by dispatchSlots. See dispatch_to above.
     executionMode: "parallel",
     description: [
@@ -13790,7 +13643,7 @@ async function buildCommanderExtraTools(
         if (!legacy && inputWantsWrite) {
           return _toolError("Anonymous run_worker is read-only. Formal Agent work must use dispatch_to.");
         }
-        // Anonymous ephemeral worker — the commander's private isolated helper. G8d step 3:
+        // Anonymous ephemeral worker — the commander's private isolated helper:
         // run it in-process, synchronously, and hand its FULL result straight
         // back as this tool's result (single-layer dispatch — no staging, no
         // turn-end flush, no re-wake; the handback IS the tool result).
@@ -14294,11 +14147,8 @@ export async function abort(uid: string, cid: string, options?: AbortRunOptions)
     backendCancelError = err;
     log.warn('abort CogSeed Backend tasks failed', { error: logErrorRef(err) });
   }
-  // 会话级 Stop 也必须把本会话仍在运行的 run 耐久停掉：RunRecord 是权威状态机，
-  // 只清内存里的队列/worker 而不写台账，run 会永远停在 running——收口被「本 run
-  // 还有待审批 Wake」的守卫挡住、没有汇总，那条 Wake 又因为 actor 已终态永远批
-  // 不过（真机复现：会话 aborted、run running、actor failed、hand_off Wake 卡住）。
-  // 复用 run 作用域已有的停止 + Wake 拒绝，保证两条停止路径语义一致。
+  // 会话 Stop 同时耐久停止仍在运行的 run，不能只清内存。复用 run 作用域的
+  // 停止与 Wake 拒绝，使会话级和 run 级停止保持一致。
   try {
     const { listRunIds, readRun, stopRun } = await import('./run_store');
     const runIds = await listRunIds(uid, cid);
@@ -14324,12 +14174,9 @@ export async function abort(uid: string, cid: string, options?: AbortRunOptions)
   } catch (err) {
     log.warn('session abort durable run stop failed', { error: logErrorRef(err) });
   }
-  // Belt-and-suspenders abort for model turns. In production traces we saw
-  // user stop requests reach this function while the bus worker map no longer
-  // exposed the live AbortController (`abortedWorkers=0`), even though the
-  // core-agent session kept running. The model client owns a per-session
-  // abort registry, so abort all active sessions for this conversation too:
-  // `gconv-<cid>` and every `gmember-<cid>-<agent>`.
+  // The worker map may no longer expose a live model controller. Also abort the
+  // model client's active session registry for this conversation: gconv-<cid>
+  // and every gmember-<cid>-<agent>.
   try {
     const model = await import("../../model/client");
     const abortByCid = (
@@ -14638,8 +14485,8 @@ async function _runCliAgentTurn(opts: {
   let resultText = "";
   let aborted = false;
   let backendSessionId: string | undefined;
-  // Task 5 metrics inputs: tool-call count (tool-event phase="use") and the
-  // terminal done event's timing/usage payload.
+  // Metric inputs: tool-call count from phase="use" events and timing/usage
+  // from the terminal runner event.
   let cliToolCalls = 0;
   let cliDoneMetrics: GroupMessageMetrics | undefined;
   const produced = new Set<string>();
@@ -14790,9 +14637,8 @@ async function _runCliAgentTurn(opts: {
           if ((e as any).status === "cancelled") aborted = true;
           if (typeof (e as any).sessionId === "string")
             backendSessionId = (e as any).sessionId as string;
-          // Task 5: settle reply metrics off the runner-attached
-          // startedAt/firstTokenAt plus the backend's usage totals (input /
-          // output / cacheRead / cacheCreate → GroupMessageMetrics.usage).
+        // Settle reply metrics from runner startedAt/firstTokenAt and backend
+        // input/output/cacheRead/cacheCreate usage totals.
           const doneEv = e as {
             metrics?: { startedAt?: unknown; firstTokenAt?: unknown };
             usage?: {

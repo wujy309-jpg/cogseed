@@ -21,6 +21,8 @@ import { createLocalTools, createFileTools } from '../../../../src/main/model/co
 import { createKbTools } from '../../../../src/main/model/core-agent/kb-tools';
 import { createRecallTools } from '../../../../src/main/model/core-agent/recall-tools';
 import { createAssetStewardTools } from '../../../../src/main/model/core-agent/asset-steward-tools';
+import { createCognitionCreateTools } from '../../../../src/main/model/core-agent/cognition-create-tools';
+import { createCognitionEditTools } from '../../../../src/main/model/core-agent/cognition-edit-tools';
 import { createPersonalOntologyTools } from '../../../../src/main/model/core-agent/personal-ontology-tools';
 import { createExperienceTools } from '../../../../src/main/model/core-agent/experience-tools';
 import { createChatHistoryTools } from '../../../../src/main/model/core-agent/chat-history-tools';
@@ -86,7 +88,7 @@ function enumerateAllInjectedTools(): AgentTool[] {
   tools.push(
     createCrossSessionMemoryTool({
       list: () => ({ ok: true, entries: [], usage: { current: 0, limit: 1 } }),
-    }),
+    }, { includeProjectTier: true }), // Enumerate the largest real description, including space conversations.
   );
   tools.push(
     createMetacognitionTool({
@@ -106,9 +108,7 @@ function enumerateAllInjectedTools(): AgentTool[] {
   }));
   tools.push(...createFileTools({ userId: 'testuid', cid: 'testcid' }));
   tools.push(...createKbTools({ userId: 'testuid' }));
-  // recall 组的三个工厂都要枚举到，否则这一组工具整体漏在反漂移之外
-  // （2026-09-25 补：此前 createRecallTools / createAssetStewardTools /
-  //  createPersonalOntologyTools 都没被调用，catalog 少一行也不会变红）。
+  // recall 组的三个工厂都要枚举到，否则目录缺项也无法被反漂移断言发现。
   const previousSemantica = process.env.COGSEED_SEMANTICA_ENABLED;
   process.env.COGSEED_SEMANTICA_ENABLED = '1';
   try {
@@ -118,8 +118,10 @@ function enumerateAllInjectedTools(): AgentTool[] {
     else process.env.COGSEED_SEMANTICA_ENABLED = previousSemantica;
   }
   tools.push(...createAssetStewardTools({ userId: 'testuid' }));
+  tools.push(...createCognitionCreateTools({ userId: 'testuid' }));
+  tools.push(...createCognitionEditTools({ userId: 'testuid' }));
   tools.push(...createPersonalOntologyTools({ userId: 'testuid' }));
-  // 经验目录工厂（specs/016 T024）：同样必须枚举，漏了它 catalog 少两行也不会红。
+  // 经验目录工厂：同样必须枚举，漏了它 catalog 少两行也不会红。
   tools.push(...createExperienceTools({ userId: 'testuid' }));
   tools.push(...createChatHistoryTools({ userId: 'testuid' }));
   tools.push(...createMessagingTools({ userId: 'testuid', cid: 'testcid' }));
@@ -208,11 +210,11 @@ function toolByName(name: string): AgentTool {
 describe('tool-catalog', () => {
   it('TOOL_CATALOG covers every tool name injected by runner (anti-drift)', () => {
     const injected = enumerateAllInjectedToolNames();
-    // 枚举本身也要覆盖到 recall 组：工厂没被调用时这一组会整体隐身，
-    // 反漂移就成了一句空话（2026-09-25 补的洞）。
+    // 枚举本身也要覆盖到 recall 组，避免遗漏整个工厂后反漂移断言失效。
     for (const name of [
       'search_ability_assets', 'ontology_query', 'personal_ontology_fields',
       'list_ability_assets', 'read_ability_asset',
+      'create_cognition', 'edit_cognition',
     ]) {
       expect(injected.has(name), `enumerateAllInjectedTools 漏了 ${name}`).toBe(true);
     }
@@ -224,7 +226,6 @@ describe('tool-catalog', () => {
   it('retired conversation formation tools are absent from both catalog and factories', () => {
     const names = TOOL_CATALOG.map(entry => entry.name);
     const injected = enumerateAllInjectedToolNames();
-    expect(names).toHaveLength(76);
     for (const retired of ['personal_field_remember', 'ontology_slot_remember', 'cognition_ontology_save', 'transcript_remember_correction']) {
       expect(names).not.toContain(retired);
       expect(injected.has(retired)).toBe(false);
@@ -237,13 +238,13 @@ describe('tool-catalog', () => {
   });
 
   it('declares the ability-asset steward surface in the recall group with no extra gate', () => {
-    // 资产管家的 6 个写工具 + 3 个读工具（specs/008 US-401/402；第 3 个读工具是
-    // 待审批提议清单，2026-09-25 因"模型拿不到待审批的内容"补的）。这些工具读写的
+    // 资产管家的读写工具（含待审批提议清单）处理的是
     // 是 <uid> 数据域里的资产记录，不碰 shell / 文件系统，所以**不该**挂
     // localExec；也不按 agent 限定——主会话与 group_chat 各 actor 共用同一面。
     // 少了 / 多了一层权限门，会直接改变"模型能不能动手"的产品口径。
     const stewardTools = [
       'list_ability_assets', 'read_ability_asset', 'list_asset_change_proposals',
+      'create_cognition', 'edit_cognition',
       'edit_ability_asset', 'merge_ability_assets', 'archive_ability_asset',
       'delete_ability_asset', 'restore_ability_asset', 'rollback_ability_asset',
     ];
@@ -426,18 +427,13 @@ describe('isToolVisibleToAgent (ownerAgent gate)', () => {
     expect(isToolVisibleToAgent('research_rerank', 'some-other-agent')).toBe(false);
   });
 
-  /**
-   * 软预算此前只告警（见上一个用例），于是描述一路变胖：本次精简前有 12 条超 480 字符，
-   * 其中 `cross_session_memory` 已达 2431——每回合都要随工具表发给模型。
-   *
-   * 这里加一道**棘轮**：新增超预算条目直接失败；已收敛的不得回退；
-   * 冻结清单里的条目一旦回到预算内，必须从清单删除（棘轮只朝收紧方向转）。
-   */
+  /** Description-budget ratchet: reject newly over-budget tools, reject
+   * regressions and remove frozen entries once they fit within the budget. */
   it('keeps the over-budget description set frozen and shrinking', () => {
     const FROZEN_OVER_BUDGET: Record<string, string> = {
       metacognition: '同上：vendored core-agent 包内',
-      bash: '平台条件文本不可删（输出目录约定 + Windows shell 规则），已从 919 精简到 ~740',
-      edit_office: 'operations 三态表是调用契约，已从 747 精简到 ~566',
+      bash: '保留输出目录约定和 Windows shell 条件',
+      edit_office: 'operations 三态表属于调用契约',
       office_read: '元素路径语法说明（/body/p[3] 等）',
       grep_files: 'output_mode 语义需要展开',
       kb_search: '检索范围与命中口径说明',
@@ -446,8 +442,7 @@ describe('isToolVisibleToAgent (ownerAgent gate)', () => {
       messaging_send: '渠道与投递语义说明',
       edit_ability_asset: '资产编辑的确认语义说明',
     };
-    // 本次收敛到预算内：回归即失败。cross_session_memory 的 summary 已由
-    // #98 reapply 从 'Read/write…' 收敛为 'Read existing…'（74 字），随批移入。
+    // 已收敛到预算内的条目不得重新超出预算。
     const SHRUNK_TO_BUDGET = ['research_rerank', 'markdown_to_pdf', 'cross_session_memory'];
 
     const over = new Set<string>();

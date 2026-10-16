@@ -1,11 +1,5 @@
-/**
- * 统一候选池测试（S3-c）。
- *
- * 覆盖：提议入池/同槽顶替（旧 pending 顶进 rejected+supersededBy）、列表排序
- * （pending 优先）、confirm 落库（统一库对象出现+版本流）、confirm 幂等重试
- * （统一库 appliedDeltas 拦截，池状态安全）、reject/defer/到期回 pending、
- * 非 proposed 拒收、坏档写侧拒绝、已决定条目不可再决定。
- */
+/** 统一候选池：同槽顶替、列表排序、确认落库与精确重放幂等、拒绝、
+ * 延后和到期恢复；拒绝非 proposed 变更、坏档写入和已决定条目的重复决定。 */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';

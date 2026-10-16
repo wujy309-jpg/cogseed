@@ -73,6 +73,8 @@ import { createKbTools } from './kb-tools';
 import { createRecallToolSuite } from './recall-tools';
 import type { OntologyAnswerEvidenceBundle } from '../../features/recall/ontology-answer-validation';
 import { createAssetStewardTools } from './asset-steward-tools';
+import { createCognitionEditTools } from './cognition-edit-tools';
+import { createCognitionCreateTools } from './cognition-create-tools';
 import { createExperienceTools } from './experience-tools';
 import { createPersonalOntologyTools } from './personal-ontology-tools';
 import { createCognitionKernelTools } from './cognition-kernel-tools';
@@ -218,6 +220,9 @@ export interface BuildRunnerParams {
   modelOverride?: { provider: string; model: string };
   /** Explicit task route. Uses the normal rotating provider; no global fallback. */
   modelCandidates?: readonly { provider: string; model: string }[];
+  /** Optional per-call output ceiling. It can only narrow model/runtime caps;
+   * utility callers use it to bound spend without changing account settings. */
+  maxOutputTokens?: number;
   /** Use an in-memory Session so utility model calls leave no resumable transcript. */
   ephemeralSession?: boolean;
   /** Explicit syntax-only JSON mode for tool-free ephemeral utility calls.
@@ -257,7 +262,7 @@ export interface BuildRunnerParams {
   agentId?: string;
   /** Optimistic-lock baseline (file mtimeMs per metacognition target)
    *  captured when the reflection orchestrator read COMPETENCE/STRATEGIES to
-   *  build its prompt (P-r2-13). The injected metacognition tool falls back
+   *  build its prompt. The injected metacognition tool falls back
    *  to it when the LLM never read the target itself, so a write based on
    *  the orchestrator's possibly-minutes-old snapshot is refused once the
    *  file changed in between. `0` means "file absent at read time". */
@@ -280,6 +285,9 @@ export interface BuildRunnerParams {
   disableTools?: boolean;
   /** Restrict tools to a read/search allowlist only. */
   toolAccess?: 'read-only';
+  /** Host-selected subset for a bounded task. Intersects, never widens, any
+   * creator or read-only policy; an empty list disables every tool. */
+  toolAllowlist?: readonly string[];
   /** Provider stream deadline before its first usable text/tool event. This
    * boundary is safe for fallback because no visible output has committed. */
   providerFirstEventTimeoutMs?: number;
@@ -292,7 +300,7 @@ export interface BuildRunnerParams {
    *  is `intersect(skillList, projectAllowedSkillIds)`; SkillStore (System
    *  B, agent self-evolved skills) stays gated by `skillList` alone so
    *  agents in projects retain access to their own evolved skills. See
-   *  CLAUDE.md §6 + `features/projects.ts::resolveProjectScope`. */
+   *  `features/projects.ts::resolveProjectScope`. */
   projectAllowedSkillIds?: readonly string[];
   /** User-explicit skill refs selected in the composer. These are rendered
    *  even when they live in open/global skill roots that are normally lazy. */
@@ -422,8 +430,7 @@ function splitRuntimeInjectionBlock(prompt: string): { stable: string; runtimeIn
  * ledger change invalidates the whole Anthropic cache prefix after it (~7-9K
  * tokens re-billed at full input price per turn). Relocating the whole H2
  * section to the volatile region keeps the cached prefix stable and follows
- * CLAUDE.md's "runtime-volatile prompt fields go in one trailing section"
- * rule. The header is already H2 so no heading rewrite is needed.
+ * the runtime rule that volatile prompt fields belong in one trailing section. The header is already H2 so no heading rewrite is needed.
  */
 function splitCommanderOrchestrationBlock(prompt: string): { stable: string; orchestrationBlock: string } {
   const marker = '\n\n## Orchestration state';
@@ -505,6 +512,10 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   finalResponseGate?: import('./recall-tools').RecallFinalResponseGate;
 }> {
   assertUtilityResponseFormat(params);
+  if (params.maxOutputTokens !== undefined
+    && (!Number.isSafeInteger(params.maxOutputTokens) || params.maxOutputTokens <= 0)) {
+    throw new Error('maxOutputTokens must be a positive integer');
+  }
   const earlyUid = params.userId || _safeActiveUserId();
   let creatorExecution: ReturnType<typeof creatorRuntimeExecutionOptions> | null = null;
   if (params.agentId) await assertAgentChatDispatchable(
@@ -520,6 +531,10 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       creatorExecution = creatorRuntimeExecutionOptions(dispatchPolicy.creator_runtime);
     }
   }
+
+  const outputCaps = [params.maxOutputTokens, creatorExecution?.maxOutputTokens]
+    .filter((value): value is number => typeof value === 'number');
+  const maxOutputTokensCeiling = outputCaps.length ? Math.min(...outputCaps) : undefined;
 
   // Auth gate first — if no group has any usable candidate, fail before
   // loading core-agent / scanning skills / opening a session file. Gives
@@ -572,7 +587,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // Per-user disabled-skill set; passed into getSystemPromptBlock so the
   // rendered `## Available skills` block excludes user-disabled skills regardless
   // of agent-level allowlist. Resolved off the active uid; session_id no longer
-  // carries the uid (CLAUDE.md §5), so callers that don't pass `params.userId`
+  // carries the uid, so callers that don't pass `params.userId`
   // fall through to the active-user singleton. Wrapped in a try/catch so ad-hoc
   // test paths that activate no user just see a null uid → empty disabled set.
   const disabledSkillIds = earlyUid ? readDisabledSets(earlyUid).skills : new Set<string>();
@@ -750,7 +765,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
 
   // Metacognition tool (per-agent, only if enabled via env var)
   if (isMetacognitionEnabled()) {
-    // P-r2-13 optimistic locking: each read captures the file's mtime as the
+    // Optimistic locking: each read captures the file's mtime as the
     // write baseline (0 = file absent at read time), and every write whose
     // baseline no longer matches is rejected instead of silently clobbering
     // a concurrent write (e.g. a user lesson saved in chat while a
@@ -761,7 +776,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     const readBaseline = new Map<'competence' | 'strategies', number>();
     const baselineFor = (t: 'competence' | 'strategies'): number | undefined =>
       readBaseline.has(t) ? readBaseline.get(t) : params.metacognitionBaselineMtime?.[t];
-    // P-r1-46: the store path resolves through the *global* active user, so
+    // The store path resolves through the *global* active user, so
     // a user switch after this runner was built would read/write another
     // user's self-assessment. Refuse both sides when they disagree.
     const activeUserSwitched = (): boolean => {
@@ -923,9 +938,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
 
   // Recall ability-asset tools (search_ability_assets: 目录 / 取正文 / 语义检索).
   // Read-only, no localExec required. Injected for every main conv + group_chat
-  // actor so the LLM can actively consult the GLOBAL asset pool (product design
-  // 2026-08-17: 注入只显示本空间资产，全局池的使用交给主动检索).
-  // 2026-09-18：带上回合上下文——模型自己取用的资产要写 agent_read 注入回执
+  // actor so the LLM can actively consult the authorized global asset pool.
+  // 模型自己取用的资产要写 agent_read 注入回执
   // 与使用流水（turnId），并以当前消息文本做适用/禁用场景匹配（taskText）。
   const recallToolSuite = uid && !params.disableTools ? createRecallToolSuite({
     userId: uid,
@@ -941,7 +955,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   }) : undefined;
   const recallTools = recallToolSuite?.tools || [];
 
-  // 资产管家工具（specs/008 US-401/402）：全量浏览、读全文、按用户指令改动。
+  // 资产管家工具：全量浏览、读全文、按用户指令改动。
   // 与 search_ability_assets 分开：那是任务执行期的取用（写 agent_read 回执与
   // 使用流水），这是管理视角（看全貌、改内容），读也不该记成"任务用了它"。
   // 同样注入给主会话与 group_chat 各 actor，且**不进只读白名单**（见下）。
@@ -954,9 +968,10 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...(params.spaceId ? { spaceId: params.spaceId } : {}),
     ...(params.userMessage ? { taskText: params.userMessage } : {}),
     sourceMessageFromUser: params.sourceMessageFromUser === true,
+    sourceMessageId: params.sourceMessageId,
   }) : [];
 
-  // 任务经验目录工具（specs/016 T024 / US-802）：list_task_experiences +
+  // 任务经验目录工具：list_task_experiences +
   // read_task_experience，2 读 0 写、无 localExec。与上面两族（资产取用/资产
   // 管家）分属两套集合（exp- vs aa-，完全隔离），但注入条件同源：主会话与
   // group_chat 各 actor 都拿到，读正文写 agent_read 回执与使用流水（turnId）、
@@ -979,6 +994,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // 任务字段读取与缺口检查；对话答案仅用于当前任务。
   const cognitionKernelTools = uid && !params.disableTools ? createCognitionKernelTools({
     userId: uid,
+    sourceMessageId: params.sourceMessageId, sourceMessageFromUser: params.sourceMessageFromUser, taskText: params.userMessage,
     allowTranscriptRead: isCommander,
     turnId: params.turnId, cid: params.cid, spaceId: params.spaceId,
     ...(params.taskRunId ? { taskRunId: params.taskRunId } : {}),
@@ -1135,6 +1151,10 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ...kbTools,
     ...recallTools,
     ...assetStewardTools,
+    ...(uid && !params.disableTools ? createCognitionCreateTools({ userId: uid, cid: params.cid, turnId: params.turnId,
+      sourceMessageId: params.sourceMessageId, sourceMessageFromUser: params.sourceMessageFromUser, taskText: params.userMessage }) : []),
+    ...(uid && !params.disableTools ? createCognitionEditTools({ userId: uid, cid: params.cid, turnId: params.turnId,
+      sourceMessageId: params.sourceMessageId, sourceMessageFromUser: params.sourceMessageFromUser, taskText: params.userMessage }) : []),
     ...experienceTools,
     ...personalOntologyTools,
     ...cognitionKernelTools,
@@ -1157,7 +1177,11 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // never reach another actor's tools[] regardless of which injection path
   // produced it. Caller-supplied extraTools / core-agent builtins aren't in the
   // catalog, so `isToolVisibleToAgent` returns true for them (unaffected).
-  const effectiveToolAllowlist = creatorExecution?.toolAllowlist;
+  const effectiveToolAllowlist = params.toolAllowlist === undefined
+    ? creatorExecution?.toolAllowlist
+    : creatorExecution?.toolAllowlist
+      ? params.toolAllowlist.filter(name => creatorExecution!.toolAllowlist.includes(name))
+      : params.toolAllowlist;
   let visibleTools = params.disableTools
     ? []
     : allTools.filter((tool) => isToolVisibleToAgent(tool.name, agentId));
@@ -1172,12 +1196,10 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   const visibleToolNameSet = new Set(visibleTools.map((tool) => tool.name));
 
   // Turn-level failure breaker. core-agent counts `isError && !recoverable`
-  // results into `permanentToolErrors` (agent/runner.ts:1500-1502) and client.ts
-  // collects the count, but nothing acted on it: a deterministic dead end (no
-  // role template, invalid args, denied policy) simply returned to the model as
-  // evidence and the turn kept trying variations of it. The breaker ends the
-  // turn on repeated same-kind failures using turn-count semantics only — the
-  // idle/watchdog path stays the owner of time-based stops. See
+  // results into `permanentToolErrors` (agent/runner.ts:1500-1502), and client.ts
+  // collects the count. The breaker ends the turn on repeated same-kind
+  // deterministic failures (no role template, invalid args, denied policy)
+  // using turn-count semantics only. The idle/watchdog path owns time-based stops. See
   // tool-failure-guard.ts for the contract.
   const toolFailureGuard = createToolFailureGuard();
   // Last breaker trip of this run, surfaced through the builder's return so the
@@ -1313,7 +1335,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ? formatSpaceInstructionsForSystemPrompt(uid, params.spaceId)
     : '';
   if (projectInstructionsBlock) parts.push(projectInstructionsBlock);
-  if (isCommander && params.cid) parts.push('Read existing ontology and confirmed transcript corrections when they help the current task. User answers and current document corrections do not directly create long-term cognition. Long-term formation follows the nightly extraction and user confirmation workflow.');
+  if (isCommander && params.cid) parts.push('Read existing ontology and confirmed transcript corrections when they help the current task. User answers and current document corrections do not directly create long-term cognition. Durable formation requires the source-bound creation or nightly extraction workflow and user confirmation.');
   if (runtimeInjectionBlock) parts.push(runtimeInjectionBlock);
   // Cross-session memory (read side): the user's stored profile + notes as
   // background context. It is more turn-volatile than resource indexes, so
@@ -1334,9 +1356,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       });
     }
   }
-  // 背景块内容源（2026-09-19 清单 #7）：画像从资产库渲染（personal 资产按
+  // 背景画像从资产库渲染（personal 资产按
   //  使用次数取头部）；记忆文件中尚未迁移的独立条目仍保留，关联镜像服从资产
-  //  状态和范围门控。agent/space 档仍在文件（阶段 D 退役）。
+  //  状态和范围门控。agent/space 档仍由各自记忆文件提供。
   const formatMemoryBlockWithAssetProfile = async (
     userId: string, agentId: string, spaceId?: string, projectId?: string, activeIds: ReadonlySet<string> = new Set(),
   ): Promise<string> => {
@@ -1367,7 +1389,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     ? await formatMemoryBlockWithAssetProfile(uid, memoryAgentScope, params.spaceId, params.projectId, activeCognitionSourceIds)
     : '';
   if (memoryBlock) parts.push(memoryBlock);
-  // 二期「空间 = 角色」：会话挂空间 → 注入该角色模板画像（个人本体角色模板文件，
+  // 空间角色画像：会话挂空间 → 注入该角色模板画像（个人本体角色模板文件，
   // 与 memoryBlock 同层级的读侧背景上下文；异步读文件，失败静默降级为空串）。
   const roleProfileBlock = (uid && memoryAgentScope && params.spaceId)
     ? await formatRoleProfileForSystemPrompt(uid, params.spaceId, {
@@ -1379,14 +1401,14 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     : '';
   if (roleProfileBlock) parts.push(roleProfileBlock);
   const resolvedSystemPrompt = parts.join('\n\n');
-  // P2: the truly per-turn-volatile blocks — the orchestration ledger (~7-9K
+  // The truly per-turn-volatile blocks — the orchestration ledger (~7-9K
   // JSON that changes every commander turn) and the datetime tail — do NOT go
   // into the system prompt. Even peeled to the tail they bust the
   // Anthropic single-block system cache (and therefore the whole history
   // prefix) every turn. Instead they ride on THIS turn's user message
   // (core-agent AgentRunParams.turnEphemeral → getMessagesForModel), the
   // uncached tail after all history, so the system + history cache prefix stays
-  // byte-stable across turns. See Common/docs/plans/context-cost-optimization.md.
+  // byte-stable across turns.
   const turnEphemeral = [orchestrationBlock, volatileTail]
     .filter((b) => b && b.trim())
     .join('\n\n');
@@ -1399,8 +1421,7 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // System A path in the user UI.
   // When the evolution stanza is not passed, core-agent defaults to
   // enabled=true + skillsDir="skills" relative to cwd, which would
-  // dump into `PC/skills/` (see the fix point in
-  // docs/plans/agent-as-directory.md).
+  // create skills under the application working directory.
   const evolutionConfig = (agentId && earlyUid)
     ? { enabled: true, skillsDir: agentEvolvedSkillsDir(earlyUid, agentId) }
     : { enabled: false };
@@ -1408,10 +1429,10 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // Fill the model catalog with each model's REAL context window (+ max output
   // tokens) so core-agent's compaction trigger uses it instead of the 200K
   // fallback — otherwise a 1M-window model compacts at 0.8×200K=160K, throwing
-  // away most of its context (G7). Populate EVERY candidate in the rotating
+  // away most of its context. Populate EVERY candidate in the rotating
   // group (keyed by its modelId), not just the primary: rotating-provider can
   // fail over to a different-window model mid-run, and core-agent looks the
-  // window up by the model the stream actually reported (P1-6).
+  // window up by the model the stream actually reported.
   // resolveConfiguredPiModel returns the pi-ai Model (catalog or custom-built),
   // which carries contextWindow + maxTokens.
   // Each entry must satisfy core-agent's ModelConfigSchema, which REQUIRES
@@ -1420,8 +1441,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
   // here. These two are schema-required metadata only — core-agent reads the
   // catalog solely for contextWindow/maxOutputTokens and routes via
   // defaultProvider/defaultModel + the injected rotating provider, never via
-  // catalog[x].provider. (Omitting them is what crashed createConfig with a Zod
-  // "provider/model Required" error once a candidate carried a real window.)
+  // catalog[x].provider. Both fields must be present for createConfig's
+  // provider/model schema validation.
   const modelCatalog: Record<string, { provider: string; model: string; contextWindow?: number; maxOutputTokens?: number }> = {};
   for (const choice of group) {
     if (modelCatalog[choice.model]) continue;
@@ -1429,26 +1450,24 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       ? buildExternalProviderModel(uid, choice.provider, choice.model, choice.maxOutputTokens)
       : resolveConfiguredPiModel(mod, choice.provider, choice.model)?.model;
     // pi-ai 目录模型同样吃本地覆盖（窗口/输出），否则设置页改了窗口、运行时仍按
-    // 目录值预算（2026-09-14 预设详情功能的运行时半环）。
+    // 目录值预算。
     const overridden = applyModelAbilityOverride(choice.provider, {
       id: choice.model,
       ...(typeof model?.contextWindow === 'number' ? { contextWindow: model.contextWindow } : {}),
       ...(typeof model?.maxTokens === 'number' ? { maxTokens: model.maxTokens } : {}),
     });
-    // B 的 Creator 输出上限要经同一个目录项生效；同时保留私仓 2026-09-14 的
-    // 预设覆盖结果（`overridden`），否则设置页改的窗口/输出在 pi-ai 目录路径上丢失。
-    const entry = modelCatalogEntryFromModel(overridden, creatorExecution?.maxOutputTokens);
+    // Creator 输出上限须经同一目录项生效，同时保留预设覆盖结果
+    // （`overridden`），避免设置页的窗口/输出覆盖在目录路径上丢失。
+    const entry = modelCatalogEntryFromModel(overridden, maxOutputTokensCeiling);
     if (entry) modelCatalog[choice.model] = { provider: choice.provider, model: choice.model, ...entry };
   }
-  // A development environment may use the SDK's environment-key fallback,
-  // which has no auth entry in `group`. The Creator cap still belongs on the
-  // selected model in that path; otherwise the policy would disappear merely
-  // because the provider was resolved from the environment.
-  if (creatorExecution?.maxOutputTokens !== undefined && !modelCatalog[modelId]) {
+  // Environment-key fallback has no auth entry in `group`; preserve the same
+  // caller/runtime output ceiling on that selected model as well.
+  if (maxOutputTokensCeiling !== undefined && !modelCatalog[modelId]) {
     modelCatalog[modelId] = {
       provider: providerId,
       model: modelId,
-      maxOutputTokens: creatorExecution.maxOutputTokens,
+      maxOutputTokens: maxOutputTokensCeiling,
     };
   }
   const config: CoreAgentConfig = mod.createConfig({
@@ -1468,11 +1487,9 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
     // (anthropic / openai / pi-ai) on every entry and stuffs the
     // provider instance into the `providers` cache; subsequent
     // `providers.get(id)` calls hit the cache first and never reach
-    // the registerFactory-injected rotating-provider below (this
-    // includes the single-key case — the old "group.length===1 → take
-    // the legacy path" branch missed cooldown / error classification
-    // for exactly this reason). Hand all provider creation to
-    // rotating-provider; for a single key the wrapper is just one
+    // the registerFactory-injected rotating-provider below. Hand all provider
+    // creation to rotating-provider so cooldown and error classification also
+    // apply to single-key groups; for a single key the wrapper is just one
     // closure (negligible cost) and we get a uniform error path.
   });
 
@@ -1490,8 +1507,8 @@ export async function buildRunner(params: BuildRunnerParams): Promise<{
       params.onNativeSearchInjected,
       params.onCandidateChosen,
       params.providerFirstEventTimeoutMs,
-      params,
-      creatorExecution?.maxOutputTokens,
+      { ...params, toolAllowlist: effectiveToolAllowlist },
+      maxOutputTokensCeiling,
     );
     // Inject the rotating provider into BOTH the factory slot AND the
     // pre-built instance cache. ProviderRegistry.get() short-circuits on
@@ -1580,7 +1597,7 @@ function _safeActiveUserId(): string | null {
   }
 }
 
-/** Tri-state connector exposure, gated by session kind (CLAUDE.md §5 session-id table):
+/** Tri-state connector exposure, gated by session kind:
  *   - `tools+block`:    group-chat task sessions (`gconv` commander + `gmember` agent worker)
  *     — block + both meta-tools (`list_connector_tools` + `call_connector_tool`). Full exposure.
  *   - `discover+block`: agent-edit (`agent`) — block + `list_connector_tools` ONLY. Editor LLM
@@ -1589,9 +1606,9 @@ function _safeActiveUserId(): string | null {
  *   - `none`:           skill-edit, KB-image, CLI dispatch, reflect, memory-extract, anon, and
  *     any future kind — neither block nor tools.
  *   Add a new conversation kind that needs connectors? Extend this function explicitly + add
- *   an entry to CLAUDE.md §5's session-id table.
+ *   the session-kind allowlist.
  *
- * session_id format is `<kind>-<tail>` (CLAUDE.md §5 — uid no longer in session_id), so the
+ * session_id format is `<kind>-<tail>` (uid is not encoded in session_id), so the
  * kind keyword is anchored at the start. */
 export function connectorExposureFromSessionId(sessionId: string): 'tools+block' | 'discover+block' | 'none' {
   if (/^(gconv|gmember)-/.test(sessionId)) return 'tools+block';
@@ -1668,7 +1685,7 @@ async function buildExternalProvider(userId: string | null, providerId: string, 
 /** rotating 候选的输出上限：external 候选走适配器（内部已套「预设详情」
  *  覆盖）；pi-ai 内置候选必须同样套覆盖——rotating 层的 paramsFor 会用该
  *  cap 无条件覆盖主回合参数，不套时目录原值会把用户在设置页写下的输出
- *  上限抹掉（2026-09-14 修复：此前恰好只有 external 路径被测试覆盖到）。
+ *  上限抹掉。
  *  导出供回归测试（同 bus.ts::_isDeepSeekOfficialBaseUrl 先例）。 */
 export function rotatingCandidateMaxTokens(
   userId: string | null,
@@ -1695,7 +1712,7 @@ async function buildRotatingProvider(
   onNativeSearchInjected?: (info: NativeSearchInjectedInfo) => void,
   onCandidateChosen?: (info: { profileId: string; providerId: string; modelId: string; entryId?: string }) => void,
   firstEventTimeoutMs?: number,
-  utilityOptions: UtilityResponseFormatOptions = {},
+  utilityOptions: UtilityResponseFormatOptions & { toolAllowlist?: readonly string[] } = {},
   maxOutputTokensCeiling?: number,
 ): Promise<LLMProvider> {
   const candidates: RotatingCandidate[] = group.map((choice) => {
@@ -1710,7 +1727,7 @@ async function buildRotatingProvider(
     const candMaxOutputTokens = rotatingCandidateMaxTokens(
       userId, candProviderId, candModelId, isExternal, resolvedModel, choice.maxOutputTokens,
     );
-    // [rebase 合并] B 线的输出上限意图：钳制私仓的轮换取值（不采用其旧表达式）。
+    // Clamp every rotated candidate to the caller and runtime output ceilings.
     const effectiveCandMaxOutputTokens = typeof candMaxOutputTokens === 'number'
       && candMaxOutputTokens > 0
       && typeof maxOutputTokensCeiling === 'number'
@@ -1741,7 +1758,7 @@ async function buildRotatingProvider(
           ...(resolvedModel?.needsCustomModel ? { customModel: resolvedModel.model } : { model: candModelId }),
           apiKey: choice.apiKey,
           onPayload: composeUtilityResponseFormatOnPayload(candProviderId, utilityOptions.responseFormat,
-            utilityOptions.disableTools ? undefined : buildNativeSearchOnPayload(candProviderId, candModelId, onNativeSearchInjected)),
+            utilityOptions.disableTools ? undefined : buildNativeSearchOnPayload(candProviderId, candModelId, onNativeSearchInjected, utilityOptions.toolAllowlist)),
         });
       },
     };
@@ -1798,25 +1815,29 @@ export function isMetacognitionEnabled(): boolean {
  * On a miss we return params unchanged (pi-ai treats an undefined return
  * as no-op, so a no-op return is also legal).
  */
-function buildNativeSearchOnPayload(
+export function buildNativeSearchOnPayload(
   providerId: string,
   modelId: string,
   onNativeSearchInjected?: (info: NativeSearchInjectedInfo) => void,
+  toolAllowlist?: readonly string[],
 ): (params: unknown, model: { api?: string }) => unknown {
   return (params, model) => {
     if (!isNativeSearchEnabled()) return params;
-    // Don't inject the model-side native search when the user has any paid
-    // search-tool API key configured — let the overriding `web_search` tool
-    // (search-tools.ts) be the single search surface, otherwise the LLM
-    // sees two competing tools and may bypass the paid one the user paid for.
-    if (hasAnySearchProfile()) return params;
     const api = model?.api;
     if (!api) return params;
     const tool = nativeSearchToolForApi(api);
     if (!tool) return params;
     const toolName = nativeSearchToolName(tool) || 'native_web_search';
-    // Payload shape + size stamped into each injection so post-incident
-    // grepping can correlate fetch failures to body size / turn length.
+    // Provider-side tools must obey the same host subset as SDK tools. This
+    // also keeps unsupported/denied search away from global profile lookup.
+    if (toolAllowlist && !toolAllowlist.includes('web_search') && !toolAllowlist.includes(toolName)) return params;
+    // Don't inject the model-side native search when the user has any paid
+    // search-tool API key configured — let the overriding `web_search` tool
+    // (search-tools.ts) be the single search surface, otherwise the LLM
+    // sees two competing tools and may bypass the paid one the user paid for.
+    if (hasAnySearchProfile()) return params;
+    // Payload shape + size stamped into each injection so diagnostic logs
+    // can correlate fetch failures to body size / turn length.
     // Cheap — one JSON.stringify of an already-serialisable object.
     const cur = params as { tools?: unknown[]; messages?: unknown[]; input?: unknown[] } & Record<string, unknown>;
     let approxBodyBytes = -1;

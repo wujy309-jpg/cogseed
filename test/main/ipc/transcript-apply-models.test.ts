@@ -1,5 +1,6 @@
+// 身份、发言与文件名均为合成测试样例；时间仅用于解析和顺序断言。
 /**
- * transcript.correct.apply × 模型候选（方案 §五 P2-1，与扫描合并后）
+ * transcript.correct.apply × 模型候选
  *
  * 三条要钉死的行为：
  *   1. 勾选并应用的模型建议只替换当前材料，不新增或修改长期词表；
@@ -43,10 +44,10 @@ function ctx() {
   return { userId: TEST_UID, user: { user_id: TEST_UID, created_at: new Date(0).toISOString() }, sender: {} };
 }
 
-const TEXT = '这个方案要付平老师确认一下排期。';
-// 付平 在原文里的偏移
-const AT = TEXT.indexOf('付平');
-const MODEL = { start: AT, wrong: '付平', correct: '傅平', confidence: 0.95, reason: '姓氏同音错写' };
+const TEXT = '这个方案要例加老师确认一下排期。';
+// 例加 在原文里的偏移
+const AT = TEXT.indexOf('例加');
+const MODEL = { start: AT, wrong: '例加', correct: '例甲', confidence: 0.95, reason: '合成名称同音错写' };
 
 async function apply(payload: Record<string, unknown>) {
   const { invokeHandlers } = await import('../../../src/main/ipc/transcript');
@@ -58,7 +59,7 @@ async function apply(payload: Record<string, unknown>) {
 describe('model_* 候选接入 apply', () => {
   it('勾选模型建议只更正当前材料，长期词表保持为空', async () => {
     const result = await apply({ models: [MODEL], acceptedIds: ['model_0'] });
-    expect(result.result.text).toBe('这个方案要傅平老师确认一下排期。');
+    expect(result.result.text).toBe('这个方案要例甲老师确认一下排期。');
     expect(result.result.applied.map((a: any) => a.entryRef)).toContain('model_0');
     expect(result.glossaryWrites).toEqual({ created: 0, updated: 0, skipped: 0 });
 
@@ -68,14 +69,13 @@ describe('model_* 候选接入 apply', () => {
   });
 
   it('只勾第 2 条时也真的应用但不形成词条（ref 要按扫描期编号走，不能按数组下标重编）', async () => {
-    // 真机事故：面板把扫描期的 model_1 放进 acceptedIds，主进程按 payload 下标重编成 model_0
-    // → 勾选建议没进正文且不报错；扫描编号必须保持稳定。
+    // 扫描期的 model_1 与 acceptedIds 必须保持一致，不能按 payload 数组下标重编。
     const second = { ...MODEL, entryRef: 'model_1', start: TEXT.indexOf('排期'), wrong: '排期', correct: '计划' };
     const result = await apply({
       models: [{ ...MODEL, entryRef: 'model_0' }, second],
       acceptedIds: ['model_1'],
     });
-    expect(result.result.text).toBe('这个方案要付平老师确认一下计划。');
+    expect(result.result.text).toBe('这个方案要例加老师确认一下计划。');
     expect(result.result.applied.map((a: any) => a.entryRef)).toEqual(['model_1']);
     expect(result.glossaryWrites).toEqual({ created: 0, updated: 0, skipped: 0 });
 
@@ -122,7 +122,7 @@ describe('model_* 候选接入 apply', () => {
       acceptedIds: ['model_0', 'model_1', 'model_2', 'model_3'],
     });
     expect(result.droppedModels).toBe(3);
-    expect(result.result.text).toBe('这个方案要傅平老师确认一下排期。');
+    expect(result.result.text).toBe('这个方案要例甲老师确认一下排期。');
     expect(result.glossaryWrites).toMatchObject({ created: 0, updated: 0 });
   });
 
@@ -156,10 +156,10 @@ describe('model_* 候选接入 apply', () => {
 
   it('已有词条继续应用并记录替换回执，但模型建议不改变已有规则或其作用域', async () => {
     const glossary = await import('../../../src/main/features/transcript_glossary');
-    const saved = glossary.upsertEntry(TEST_UID, { wrong: '付平', correct: '傅平', source: 'manual', docId: 'doc_1' }).entry!;
+    const saved = glossary.upsertEntry(TEST_UID, { wrong: '例加', correct: '例甲', source: 'manual', docId: 'doc_1' }).entry!;
     const before = { wrong: saved.wrong, correct: saved.correct, source: saved.source, scope: saved.scope };
     const result = await apply({ acceptedIds: [saved.id] });
-    expect(result.result.text).toBe('这个方案要傅平老师确认一下排期。');
+    expect(result.result.text).toBe('这个方案要例甲老师确认一下排期。');
     expect(result.glossaryWrites).toMatchObject({ created: 0, updated: 0 });
     expect(glossary.listEntries(TEST_UID)).toHaveLength(1);
     const current = glossary.findEntry(TEST_UID, saved.id)!;

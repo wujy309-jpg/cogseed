@@ -1,7 +1,5 @@
-/**
- * 判定引擎 v3 测试（S3-d）：确定性短路（不调模型）、多候选+空解析、
- * 相关性检索排序、降级路径、注册表驱动。
- */
+/** 判定引擎测试：确定性短路、多候选与解析失败、相关性排序、降级路径
+ * 及注册表驱动。模型输出由合成夹具提供。 */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
