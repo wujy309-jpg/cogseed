@@ -12,9 +12,17 @@ let root: string, previous: string | undefined;
 const user = 'ontology-only-user';
 beforeEach(() => {
   vi.resetModules();
-  semanticModel.mockReset().mockResolvedValue({ result: { text: JSON.stringify({ supported: true, noUnsupportedClaims: true,
-    scopePreserved: true, finalDecisionPreserved: true, priorContentPreserved: true,
-    evidence: [{ label: 'm1', approvedQuoteIndex: 0 }] }), meta: {} } });
+  semanticModel.mockReset().mockImplementation(async (_userId: string, input: { message: string }) => {
+    const payload = JSON.parse(input.message);
+    expect(payload.ruleSourceRequests).toEqual([expect.objectContaining({ recordId: 'source-rule' })]);
+    const evidence = [{ label: 'm1', approvedQuoteIndex: 0 }];
+    return { result: { text: JSON.stringify({ supported: true, noUnsupportedClaims: true,
+      scopePreserved: true, finalDecisionPreserved: true, priorContentPreserved: true, evidence,
+      sourceRuleConclusions: [{ recordId: 'source-rule', status: 'resolved',
+        expectedContract: { strength: 'suggestion', condition: null, effect: { kind: 'note' }, exception: '' },
+        topicEvidence: evidence, fieldEvidence: { strength: evidence, condition: [], effect: [], exception: [] } }],
+    }), meta: {} } };
+  });
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'ontology-only-'));
   previous = process.env.COGSEED_WORKSPACE_ROOT;
   process.env.COGSEED_WORKSPACE_ROOT = root;

@@ -165,13 +165,18 @@ describe('Recall nightly summary/value/extraction closed loop', () => {
       .mockResolvedValueOnce({ text: JSON.stringify({ eligible: true, reason: '可指导以后复杂问题表达', evidence: [{ messageId: source.id, quote }] }), meta: {} })
       .mockResolvedValueOnce({ text: JSON.stringify({ candidates: [{ judgment: '用户自2026年8月14日起声明一个长期表达偏好：回答其复杂问题时，先直接给出结论，再解释关键原因，避免开头先铺很长背景。适用于以后类似复杂问题，不要求省略必要证据。',
         value: '指导以后复杂问题的回答结构并保留必要证据。', summary: '复杂问题表达偏好', contentCategory: 'preference', suggestedScope: 'general', suggestedAction: 'create', risk: 'low', evidence: ['m1'] }] }), meta: {} })
-      .mockResolvedValueOnce({ text: JSON.stringify({ supported: true, noUnsupportedClaims: true, scopePreserved: true,
-        finalDecisionPreserved: true, priorContentPreserved: true, evidence: [{ label: 'm1', quote }] }), meta: {} });
+      .mockResolvedValueOnce({ text: JSON.stringify({ assessments: [{ index: 0, uncertaintyDisposition: 'none',
+        checks: { supported: true, noUnsupportedClaims: true, scopePreserved: true,
+          finalDecisionPreserved: true, priorContentPreserved: true, evidence: [{ label: 'm1', quote }] } }] }), meta: {} });
     const { extracted, candidates } = await runNightlyProposal();
     expect(extracted.status).toBe('review_ready');
     const [candidate] = await candidates.listRecallCandidates(USER_ID);
     expect(candidate.judgment).toContain('不要求省略必要证据');
-    expect(mocks.buildRunner.mock.calls.map(call => call[0].sessionId)).toContainEqual(expect.stringMatching(/memory-grounding/));
+    expect(mocks.buildRunner.mock.calls.map(call => call[0].sessionId)).toContainEqual(expect.stringMatching(/^memory-formation-recall-/));
+    expect(mocks.runModel).toHaveBeenCalledTimes(3);
+    const batch = JSON.parse(mocks.runModel.mock.calls[2][0].message);
+    expect(batch.candidates).toEqual([expect.objectContaining({ index: 0,
+      sources: [expect.objectContaining({ label: 'm1', text: original, approvedQuotes: [quote] })] })]);
   });
 
   it.each(['rule', 'preference', 'template', 'method', 'lesson', 'unclassified'])('the same supported cognition has identical admission regardless of browsing label (%s)', async contentCategory => {
