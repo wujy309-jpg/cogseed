@@ -50,46 +50,6 @@ export interface AssetSlotRef {
   required?: boolean;
 }
 
-/** 报销任务的个人信息需求；领域参考为 BONC expense-assistant 的用户资料、账户与开票模型。 */
-const EXPENSE_FIELDS: readonly PersonalFieldRef[] = [
-  { fieldName: '姓名' },
-  { fieldName: '工号' },
-  { fieldName: '部门' },
-  { fieldName: '岗位' },
-  { fieldName: '银行卡号' },
-  { fieldName: '开户行' },
-  { fieldName: '审批人' },
-  { fieldName: '成本中心' },
-  { fieldName: '项目归属' },
-  { fieldName: '发票抬头' },
-  { fieldName: '纳税人识别号' },
-  { fieldName: '常驻城市' },
-  { fieldName: '住宿标准' },
-  { fieldName: '常用交通工具' },
-  { fieldName: '费用承担部门' },
-  { fieldName: '联系电话' },
-  { fieldName: '工作邮箱' },
-  { fieldName: '提交窗口' },
-  { fieldName: '是否需行程单' },
-  { fieldName: '报销备注偏好' },
-];
-
-/** 招投标任务的个人信息需求；领域参考为 BONC bid-assistant 的人员、资格、业绩与项目角色模型。 */
-const BID_FIELDS: readonly PersonalFieldRef[] = [
-  { fieldName: '姓名' },
-  { fieldName: '身份证号' },
-  { fieldName: '学历' },
-  { fieldName: '执业资格证书编号' },
-  { fieldName: '社保缴纳地' },
-  { fieldName: '拟任项目角色' },
-  { fieldName: '代表业绩' },
-  { fieldName: '联系电话' },
-  { fieldName: '工作邮箱' },
-  { fieldName: '投标保证金账户' },
-  { fieldName: '开户许可证号' },
-  { fieldName: '公司授权代表' },
-];
-
 /**
  * 周报任务同时使用三轴槽位。
  * 本体轴绑定"项目的固定接收人"事实与周报规则；资产轴找周报模板。
@@ -106,8 +66,6 @@ const WEEKLY_REPORT_SLOTS = {
 };
 
 export const TASK_FIELD_PACKS: Record<string, TaskFieldPack> = {
-  expense: { id: 'expense', title: '报销', fields: EXPENSE_FIELDS },
-  bid: { id: 'bid', title: '招投标', fields: BID_FIELDS },
   weekly_report: { id: 'weekly_report', title: '周报', ...WEEKLY_REPORT_SLOTS },
 };
 

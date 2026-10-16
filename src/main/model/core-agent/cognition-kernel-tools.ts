@@ -42,7 +42,7 @@ function createFieldsCheckTool(opts: CognitionKernelToolsOpts): AgentTool {
     executionMode: 'parallel',
     description:
       '查一个任务类型开工前需要的认知槽位（三轴：个人字段／本体事实与规则／方法资产）：哪些已有、哪些还缺。'
-      + '报销用 pack="expense"，招投标用 pack="bid"，周报用 pack="weekly_report"。'
+      + '周报用 pack="weekly_report"。'
       + '本体 fact 槽位需要主体时，用 subjects 告诉它这次任务针对哪个对象（如 {"周报-固定接收人":"项目甲"}）。'
       + '对缺的槽位，在对话里直接问用户（一条一条问，不要一次抛整张表），'
       + '用户回答仅用于当前任务；长期资料由夜间提取和用户确认形成。'
@@ -50,7 +50,7 @@ function createFieldsCheckTool(opts: CognitionKernelToolsOpts): AgentTool {
     inputSchema: {
       type: 'object',
       properties: {
-        pack: { type: 'string', enum: PACK_IDS, description: 'Task slot pack id (expense / bid / weekly_report).' },
+        pack: { type: 'string', enum: PACK_IDS, description: 'Task slot pack id (weekly_report).' },
         subjects: {
           type: 'object',
           description: 'Optional. fact 槽位的主体绑定：槽位名 → 对象名（来自任务上下文）。',

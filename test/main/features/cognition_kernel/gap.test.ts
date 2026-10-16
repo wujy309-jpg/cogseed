@@ -39,7 +39,7 @@ function writePoDoc(): void {
           updatedAt: '2026-09-01T00:00:00Z',
           fields: [
             { id: 'f1', name: '姓名', origin: 'user', createdAt: '2026-09-01T00:00:00Z' },
-            { id: 'f2', name: '银行卡号', origin: 'user', createdAt: '2026-09-01T00:00:00Z' },
+            { id: 'f2', name: '联系偏好', origin: 'user', createdAt: '2026-09-01T00:00:00Z' },
           ],
           values: [
             { id: 'v1', fieldId: 'f1', text: '示例用户甲', source: 'manual', createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
@@ -61,25 +61,32 @@ function mods() {
   ]).then(([gap, store]) => ({ gap, store }));
 }
 
-const PACK = { id: 'expense', title: '报销', fields: [
+const PACK = { id: 'synthetic_task', title: '合成任务', fields: [
   { fieldName: '姓名', required: true },
-  { fieldName: '银行卡号', required: true },
+  { fieldName: '联系偏好', required: true },
 ] } as const;
 
 describe('cognition_kernel/gap — 体检（缺口计算）', () => {
+  it('内置注册表仅保留周报包，其他任务标识不解析', async () => {
+    const { TASK_FIELD_PACKS, getTaskFieldPack } = await import('../../../../src/main/features/cognition_kernel/task_field_packs');
+    expect(Object.keys(TASK_FIELD_PACKS)).toEqual(['weekly_report']);
+    expect(getTaskFieldPack('weekly_report')).toMatchObject({ id: 'weekly_report', title: '周报' });
+    expect(getTaskFieldPack('synthetic_task')).toBeUndefined();
+  });
+
   it('旧账有值→bound；缺的→gap 带提问与动作', async () => {
     writePoDoc();
     const { gap } = await mods();
     const check = await gap.checkTaskFields(UID, PACK);
     expect(check.boundCount).toBe(1);
     expect(check.gaps).toHaveLength(1);
-    expect(check.gaps[0]).toMatchObject({ fieldName: '银行卡号', reason: 'no_value', action: 'answer' });
-    expect(check.gaps[0].question).toContain('银行卡号');
+    expect(check.gaps[0]).toMatchObject({ fieldName: '联系偏好', reason: 'no_value', action: 'answer' });
+    expect(check.gaps[0].question).toContain('联系偏好');
   });
 
   it('非必需字段缺失不进缺口（但仍如实记录在 resolution.missing）', async () => {
     const { gap } = await mods();
-    const check = await gap.checkTaskFields(UID, { id: 'p', title: 'p', fields: [{ fieldName: '银行卡号', required: false }] });
+    const check = await gap.checkTaskFields(UID, { id: 'p', title: 'p', fields: [{ fieldName: '联系偏好', required: false }] });
     expect(check.gaps).toHaveLength(0);
     expect(check.resolution.missing).toHaveLength(1);
   });

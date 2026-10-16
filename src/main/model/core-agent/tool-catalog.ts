@@ -135,7 +135,7 @@ export const TOOL_CATALOG: ToolCatalogEntry[] = [
   { name: 'search_ability_assets', group: 'recall', summary: 'Semantic search over the user\'s ability asset pool (沉淀的可复用经验/规则/模板/方法；全量只读，含所有空间与全局资产).' },
   { name: 'ontology_query', group: 'recall', summary: 'Navigate governed ability-asset relations with bounded hops and return auditable evidence paths.' },
   // 个人字段读取与缺口检查；缺失字段在当前对话中补充。
-  { name: 'personal_fields_check', group: 'recall', summary: 'Read which cognition slots a task type needs across three axes (personal fields / ontology facts and rules / method assets), which are bound, and which are missing (packs: expense / bid / weekly_report). Ask the user in the conversation for the missing ones.' },
+  { name: 'personal_fields_check', group: 'recall', summary: 'Read which cognition slots a task type needs across three axes (personal fields / ontology facts and rules / method assets), which are bound, and which are missing (pack: weekly_report). Ask the user in the conversation for the missing ones.' },
   { name: 'transcript_corrections_query', group: 'recall', summary: 'Read confirmed conversation/ontology-scene transcript corrections and canonical names before revising a transcript; exclude uncertain identities.' },
   { name: 'cognition_ontology_query', group: 'recall', summary: 'Read time-aware ontology facts and applicable rules through explicit module references, with source/version citations and private-scope filtering.' },
 
