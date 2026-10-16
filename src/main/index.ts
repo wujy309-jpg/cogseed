@@ -243,8 +243,8 @@ import * as taskNotifications from './features/task_notifications';
 import { shouldHideOnClose, startBackgroundRun, type BackgroundRun, type TrayMenuItemSpec } from './features/background_run';
 import * as cogseedBackend from './features/cogseed_backend';
 import { recoverRecallCaptures, startNightlyCaptureSweepLoop, startRecallCaptureOrchestrator } from './features/recall/capture-service';
-// 2026-10-08 U09：KSTAR 收口编排动态导入——KSTAR 缺失不影响主进程启动
-// 与认知流程。
+// Load KSTAR closure orchestration dynamically so its absence does not block
+// main-process startup or cognition workflows.
 type KstarClosureStoppers = Array<() => void>;
 let kstarClosureStoppers: KstarClosureStoppers = [];
 async function startKstarClosureOrchestrators(): Promise<KstarClosureStoppers> {
@@ -1936,10 +1936,7 @@ if (!gotLock) {
       void uid;
     });
 
-    // recall:correct-seed-maturity 已随出身收敛退役（2026-09-20）：一次性
-    // 历史归档修正早已空转，出身单值化后判据不复存在（见 asset-service 注释）。
-    // 2026-08-15 UI 优化：旧 KStar 线资产带英文技术标题（'Reusable experience
-    // lesson (requirement-level)' 等），迁移为中文可读。幂等，修完空转。
+    // Idempotently replace legacy KStar technical titles with readable titles.
     registerDeferred('recall:migrate-legacy-titles', async () => {
       const { migrateLegacyUserFacingTitles } = await import('./features/recall/asset-service');
       await migrateLegacyUserFacingTitles(users.getActiveUserId());

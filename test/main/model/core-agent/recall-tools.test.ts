@@ -301,7 +301,7 @@ describe('recall search_ability_assets tool', () => {
     expect(scopeFiltered.content).not.toContain('番茄工作法');
   });
 
-  it('目录模式（2026-09-18）：不给 query 也不给 assetIds 时返回全量目录，含判断适配需要的字段', async () => {
+  it('目录模式：不给 query 也不给 assetIds 时返回全量目录，含判断适配需要的字段', async () => {
     const a = await seedAsset('发布类公告应包含背景、变更点、影响范围、生效时间、联系方式五段。', { spaceId: 'sp_a', scope: 'space' });
     await seedAsset('已停用的经验。', { spaceId: 'sp_a', scope: 'space', pause: true });
     await seedAsset('番茄工作法：25 分钟专注加 5 分钟休息。', { scope: 'general' });
@@ -317,7 +317,7 @@ describe('recall search_ability_assets tool', () => {
     expect(catalog.content).toContain('番茄工作法');
     expect(catalog.content).not.toContain('已停用的经验');
     expect(catalog.content).toContain(`[asset:${a.id}]`);
-    // 模型据此判断适配所需的字段（2026-09-18 压缩为短标签两行制）：
+    // 模型据此判断适配所需的字段：
     // 标题 — 一句话 / 类型·范围·成熟度·版本·使用次数 ｜ 适用首条。
     expect(catalog.content).toContain('规则');
     expect(catalog.content).toContain('space');
@@ -344,7 +344,7 @@ describe('recall search_ability_assets tool', () => {
     expect(page2.content).toContain('本页 2-2 条');
   });
 
-  it('正文模式（2026-09-18）：按 id 取正文，过准入门，并写 agent_read 注入回执 + 使用流水', async () => {
+  it('正文模式：按 id 取正文，过准入门，并写 agent_read 注入回执 + 使用流水', async () => {
     const live = await seedAsset('性能类提问需用真实日志做分层归因，先给链路再给瓶颈。', { scope: 'general' });
     const paused = await seedAsset('已停用的经验。', { scope: 'general', pause: true });
 
@@ -363,8 +363,6 @@ describe('recall search_ability_assets tool', () => {
     expect(read.content).toContain('先给链路再给瓶颈');
     expect(read.content).toMatch(/版本:v\d/);
     expect(suite.finalResponseGate.isRequired()).toBe(true);
-    // 生命周期元数据行已随出身收敛移除（2026-09-20）。
-
     // 留痕：模型自己取用也算一次真实带入（否则自选资产进不了升档链）。
     const rows = await receipts.listInjectionReceipts(TEST_UID, 'turn-read0001');
     expect(rows.map((row) => `${row.channel}:${row.assetId}`)).toEqual([`agent_read:${live.id}`]);
@@ -453,9 +451,8 @@ describe('recall search_ability_assets tool', () => {
   });
 
   /**
-   * 输出预算（2026-09-18 质量门）：目录是索引不是正文。"可用高效"的第一层
-   * 含义就是"模型读得起"——这里把预算写成断言，任何一条超了都说明目录正在
-   * 长回"又一坨正文"。
+   * Catalog output is an index, not full asset content. These assertions bound
+   * its request cost independently of the full-text read path.
    */
   it('目录预算：每条平均 ≤ 110 字符，一句话不残缺（不以标点结尾）', async () => {
     const filler = '先给结论、再给依据、最后给下一步动作；遇到数据缺口时先说明缺口而不是硬给结论。'.repeat(3);
@@ -722,7 +719,7 @@ describe('recall search_ability_assets tool', () => {
     expect(fullText.content.length).toBeGreaterThan(catalog.content.length);
   });
 
-// 目录相关度标记（2026-09-22）：★ 标记 + 相关优先排序（在 hint 侧，工具目录
+// 目录相关度标记：★ 标记 + 相关优先排序（在 hint 侧，工具目录
 // 模式共条目格式——此测试锁 formatCatalogEntry 的标记输出）。
 describe('catalog relevance mark', () => {
   it('formatCatalogEntry marks relevant assets with a star', async () => {
@@ -741,7 +738,7 @@ describe('catalog relevance mark', () => {
 // 推荐排序接线（specs/012 T018）：工具目录模式与提示词常驻目录共调
 // asset-ranking.rankAssets 的同一推荐分——同一次会话里两处看到同一顺序；
 // 语义检索（runSearch）保持纯余弦，不受行为信号（采用回执）影响。
-describe('catalog ranking parity (T018)', () => {
+describe('catalog ranking parity', () => {
   const idsOf = (text: string) => [...text.matchAll(/^\d+\.\s(?:★)?\[asset:([^\]]+)\]/gm)].map((m) => m[1]);
 
   it('工具目录第一页与提示词常驻目录同序（同一 scene 输入下逐位一致）', async () => {
