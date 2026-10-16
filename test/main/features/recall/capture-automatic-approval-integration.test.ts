@@ -190,9 +190,18 @@ it.each([false, true])('automatically completes and reverses a supported prefere
   });
   mocks.run.mockReset()
     .mockResolvedValueOnce({ text: JSON.stringify({ eligible: true, reason: '明确的长期回答偏好可以用于后续沟通', evidence: [{ messageId: 'message-user', quote }] }), meta: {} })
-    .mockResolvedValueOnce({ text: JSON.stringify({ candidates: [{ ...(joint ? { ontologyChanges: { reason: 'Preserve the approved answer preference as its shared rule.', evidence: ['m1'], actions: [{ intent: 'create', recordId: 'answer-rule', sourceLabel: 'Approved user preference', record: { kind: 'rule', moduleId: 'personal', name: '回答结构偏好', requirement: quote, strength: 'default', condition: { kind: 'task', field: 'purpose', equals: 'answer' }, effect: { kind: 'note' }, exception: '' } }], refs: [{ moduleId: 'personal', recordId: 'answer-rule', versionPolicy: 'current', sharedBody: true }] } } : {}), judgment: quote, value: '长期保持清晰表达和证据边界，提升后续沟通效率。', summary: '回答结构偏好', suggestedType: 'personal', suggestedScope: 'general', suggestedAction: 'create', risk: 'low', evidence: ['m1'] }] }), meta: {} })
-    .mockResolvedValueOnce({ text: JSON.stringify({ supported: true, noUnsupportedClaims: true, scopePreserved: true,
-      finalDecisionPreserved: true, priorContentPreserved: true, evidence: [{ label: 'm1', quote }] }), meta: {} });
+    .mockResolvedValueOnce({ text: JSON.stringify({ candidates: [{ ...(joint ? { ontologyChanges: { reason: 'Preserve the approved answer preference as its shared rule.', evidence: ['m1'], actions: [{ intent: 'create', recordId: 'answer-rule', sourceLabel: 'Approved user preference', record: { kind: 'rule', moduleId: 'personal', name: '回答结构偏好', requirement: quote, strength: 'default', condition: { kind: 'task', field: 'purpose', equals: 'answer' }, effect: { kind: 'note' }, exception: '' } }], refs: [{ moduleId: 'personal', recordId: 'answer-rule', versionPolicy: 'current', sharedBody: true }] } } : {}), judgment: quote, value: '长期保持清晰表达和证据边界，提升后续沟通效率。', summary: '回答结构偏好', suggestedType: 'personal', suggestedScope: 'general', suggestedAction: 'create', risk: 'low', evidence: ['m1'] }] }), meta: {} });
+  const checks = { supported: true, noUnsupportedClaims: true, scopePreserved: true,
+    finalDecisionPreserved: true, priorContentPreserved: true, evidence: [{ label: 'm1', quote }] };
+  const sourceRuleConclusions = [{ recordId: 'answer-rule', status: 'resolved',
+    expectedContract: { strength: 'default', condition: { kind: 'task', field: 'purpose', equals: 'answer' }, effect: { kind: 'note' }, exception: '' },
+    topicEvidence: [{ label: 'm1', quote }], fieldEvidence: {
+      strength: [{ label: 'm1', quote }], condition: [{ label: 'm1', quote }], effect: [], exception: [] } }];
+  // Formation and persisted automatic support are separate protocol boundaries.
+  if (joint) mocks.run.mockResolvedValueOnce({ text: JSON.stringify({ assessments: [{ index: 0, checks,
+    uncertaintyDisposition: 'none', sourceRuleConclusions }] }), meta: {} });
+  mocks.run.mockResolvedValueOnce({ text: JSON.stringify({ ...checks,
+    ...(joint ? { sourceRuleConclusions } : {}) }), meta: {} });
   const settings = await import('../../../../src/main/features/recall/capture-settings');
   const capture = await import('../../../../src/main/features/recall/capture-service');
   const paths = await import('../../../../src/main/features/recall/paths');
@@ -214,6 +223,11 @@ it.each([false, true])('automatically completes and reverses a supported prefere
     const [file] = fs.readdirSync(directory);
     const result = await capture.runRecallCapture('capture-user', file.replace(/\.json$/, ''));
     expect(result.status).toBe('completed');
+    expect(mocks.buildRunner.mock.calls.map(call => call[0].sessionId)).toEqual([
+      expect.stringMatching(/^memory-summary-/), expect.stringMatching(/^memory-value-/), expect.stringMatching(/^memory-extract-/),
+      ...(joint ? [expect.stringMatching(/^memory-formation-recall-/)] : []),
+      expect.stringMatching(/^one-shot-automatic-support-/),
+    ]);
     expect(result.contextSummary?.topics.some(topic => topic.unresolved.length > 0)).toBe(true);
     const [candidate] = await candidates.listRecallCandidates('capture-user');
     expect(candidate).toMatchObject({ status: 'confirmed', autoReview: { eligible: true } });

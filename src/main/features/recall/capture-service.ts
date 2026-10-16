@@ -8,7 +8,7 @@ import { assessFormationBatch, FormationBatchUnavailableError, type FormationBat
 import { captureSourcePassages } from './capture-context-payload';
 import { findConversationMessageById } from './conversation-message-lookup';
 import { validateFormationComparison, type FormationComparison } from './formation-comparison';
-import { type CaptureUncertaintyAssessment } from './capture-uncertainty';
+import { observeCaptureBatchUncertainty, type CaptureUncertaintyAssessment } from './capture-uncertainty';
 import { hasFormationRuleChanges, reviseFormationRuleSemantics, formationRuleContracts, formationRuleContext, deriveFormationRuleRevisions,
   type SourceRuleConclusion, type FormationRuleRevision } from './ontology-rule-semantics';
 import { captureExistingAssetReadContext, selectCaptureExistingAssets, type CaptureExistingAssetsResult } from './capture-existing-assets';
@@ -1970,7 +1970,7 @@ export async function runRecallCapture(
         durationMs: undefined,
         modelUsage: undefined,
         extractionRepairAttempted: undefined,
-        uncertaintyAssessments: undefined,
+        uncertaintyAssessments: current.formationCheckpoint ? current.uncertaintyAssessments : undefined,
         candidateSupportUnavailable: current.formationCheckpoint ? current.candidateSupportUnavailable : undefined,
         candidateSupportUnavailableCount: current.formationCheckpoint ? current.candidateSupportUnavailableCount : undefined,
         updatedAt: startedAt,
@@ -2343,6 +2343,11 @@ export async function runRecallCapture(
         batchUnavailableReason = error instanceof FormationBatchUnavailableError ? error.reason : 'assessment_invalid';
       }
     }
+    // A late model result, including an unavailable verdict, cannot settle a
+    // scheduled capture after admission closes or overwrite cancellation.
+    if (signal?.aborted || !await canContinue()) return settleInterruptedCapture(userId, id);
+    capture = await readRecallCapture(userId, id);
+    if (capture.status !== 'extracting') return capture;
     // Replaying candidate persistence must retain the proof already attached to
     // a saved group. A rebuilt summary/value decision clears this checkpoint.
     const extractionCompletedAt = capture.extractionCompletedAt || new Date().toISOString();
@@ -2357,6 +2362,7 @@ export async function runRecallCapture(
     const byLabel = new Map(promptMessages.map((message) => [message.label, message]));
     const prepared: RecallCaptureFormationCheckpoint['groups'] = [];
     const supportUnavailable: NonNullable<RecallCaptureRecord['candidateSupportUnavailable']> = [];
+    const uncertaintyAssessments: NonNullable<RecallCaptureRecord['uncertaintyAssessments']> = [];
     const recordSupportUnavailable = async (candidateIndex: number, candidate: ParsedCandidate,
       stage: 'grounding' | 'uncertainty', reason: string) => {
       supportUnavailable.push({ candidateIndex, stage, reason,
@@ -2383,6 +2389,30 @@ export async function runRecallCapture(
         return { ...message, text: quotes.join('\n') };
       });
       const assessment = assessed.get(index);
+      const needsAssessment = ambiguity.some(item => item.index === index);
+      let uncertaintyAssessment: CaptureUncertaintyAssessment | undefined;
+      if (candidate.uncertainty && needsAssessment) {
+        const target = extractionAssets.find(asset => asset.id === candidate.targetAssetId);
+        const unavailableReason: CaptureUncertaintyAssessment['reason'] = batchUnavailableReason === 'context_too_large'
+          ? 'uncertainty_context_too_large' : batchUnavailableReason === 'source_unavailable'
+            ? 'uncertainty_context_unavailable' : batchUnavailableReason === 'assessment_invalid'
+              ? 'uncertainty_assessment_invalid' : 'uncertainty_model_unavailable';
+        uncertaintyAssessment = observeCaptureBatchUncertainty({ candidate, sources: sourcesFor(candidate), contextMessages: promptMessages,
+          summary: capture.contextSummary?.topics, ...(target ? { existingTarget: target } : {}) }, assessment, unavailableReason);
+        uncertaintyAssessments.push({ ...uncertaintyAssessment, candidateIndex: index });
+        capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
+          ...current, uncertaintyAssessments: [...uncertaintyAssessments], updatedAt: new Date().toISOString(),
+        });
+        if (capture.status !== 'extracting') return capture;
+        if (!uncertaintyAssessment.modelCompleted) {
+          await recordSupportUnavailable(index, candidate, 'uncertainty', uncertaintyAssessment.reason || 'uncertainty_assessment_invalid');
+          continue;
+        }
+        if (!uncertaintyAssessment.nonBlocking) continue;
+      } else if (batchUnavailableReason && needsAssessment) {
+        await recordSupportUnavailable(index, candidate, 'grounding', batchUnavailableReason);
+        continue;
+      }
       const supported = Boolean(assessment && Object.entries(assessment.checks).filter(([key]) => key !== 'evidence').every(([, value]) => value === true));
       if (assessment?.comparison) candidate.comparison = assessment.comparison;
       if (supported && assessment?.revision) {
@@ -2394,14 +2424,13 @@ export async function runRecallCapture(
         candidate.ontologyChanges, assessment.ruleRevisions, Object.values(ontologyDocument.records));
       const deltaSupported = Boolean(assessment && assessment.checks.supported && assessment.checks.noUnsupportedClaims
         && assessment.checks.scopePreserved && assessment.checks.finalDecisionPreserved);
-      if (supported && assessment!.uncertaintyDisposition !== 'content_unresolved') delete candidate.uncertainty;
+      if (uncertaintyAssessment?.nonBlocking) delete candidate.uncertainty;
       const comparisonHeld = assessment && !assessment.checks.priorContentPreserved
         || candidate.comparison?.relation === 'ambiguous'
         || candidate.comparison && !['new', 'duplicate'].includes(candidate.comparison.relation)
           && (candidate.targetAssetId !== candidate.comparison.targetAssetId || !['update', 'limit_scope', 'pause', 'keep_current'].includes(candidate.suggestedAction || ''))
-        || ambiguity.some(item => item.index === index) && (!assessment || assessment.uncertaintyDisposition === 'content_unresolved');
+        || needsAssessment && (!assessment || assessment.uncertaintyDisposition === 'content_unresolved');
       if (comparisonHeld) candidate.uncertainty ||= '形成比较尚未消除对象、范围或来源歧义，需要人工核对。';
-      if (batchUnavailableReason && ambiguity.some(item => item.index === index)) await recordSupportUnavailable(index, candidate, 'grounding', batchUnavailableReason);
       // No-change repetitions should not repeatedly become attention items.
       if ((candidate.comparison?.relation === 'duplicate' || candidate.suggestedAction === 'keep_current') && !candidate.ontologyChanges) continue;
       const quality = assessRecallCaptureCandidateQuality(candidate, qualityEvidence);
@@ -2531,9 +2560,18 @@ export async function runRecallCapture(
       }
     }
 
-    // No group is committed while another required support check is unavailable.
-    // Retrying preparation is safe here because no candidate write has started.
-    if (supportUnavailable.length) throw new CaptureFailure('candidate_support_unavailable', 'formation support needs a later retry');
+    // Each group is complete (including any joint ontology change). A failed
+    // support service for another independent group must not discard it. With
+    // no complete group, keep preparation retryable rather than freezing empty.
+    if (supportUnavailable.length && !prepared.length) {
+      // An otherwise parseable batch may still lack a usable uncertainty audit
+      // (for example `none` or non-unique evidence). Do not replay that verdict
+      // forever when this source is admitted for a later support retry.
+      capture = await updateCapture(userId, id, current => current.status !== 'extracting' ? current : {
+        ...current, formationBatchAssessment: undefined, updatedAt: new Date().toISOString(),
+      });
+      throw new CaptureFailure('candidate_support_unavailable', 'formation support needs a later retry');
+    }
     const checkpoint: RecallCaptureFormationCheckpoint = { version: 1, sourceDigest,
       summaryDigest: judgmentSummaryDigest, judgedAt: capture.valueJudgment!.judgedAt, completedAt: extractionCompletedAt,
       sourceScope, groups: prepared, parsedCount: parsed.length, emittedCount: parseResult.emittedCount,

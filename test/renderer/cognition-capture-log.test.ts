@@ -2,13 +2,14 @@
  * 认知资产重构后的页面级用例：我的认知 / 本体 / 系统活动 / 设置。
  *
  * 我的认知统一列表与同区详情；系统活动处理候选和来源异常；设置呈现真实能力。
- * 这里把**真实的 views.js + vocabulary.js + ui-button.js** require 进来跑
- * （与 cognition-pages.test.ts 同一模式）：stub 只负责 window 契约，断言
- * 落在渲染产出的 HTML 上。
+ * 与其他认知页面用例共用真实 core.js + views.js 的隔离装配，保留按页签
+ * 加载契约；断言落在渲染产出的 HTML 上，不另造 CogAssets 的核心 API。
  */
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { runInContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
+import { loadCognitionAssets } from './helpers/cognition-renderer';
 
 const rootDir = resolve(__dirname, '../..');
 // sourceIssuesSection 等异常下钻组件随候选族迁入
@@ -18,124 +19,30 @@ const viewsSource = ['views.js', 'review-candidate.js', 'review-views.js', 'libr
   .join('\n');
 const appSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/app.js'), 'utf8');
 const coreSource = readFileSync(resolve(rootDir, 'src/renderer/modules/cognition-assets/core.js'), 'utf8');
+const iconsSource = readFileSync(resolve(rootDir, 'src/renderer/modules/icons.js'), 'utf8');
 
-const esc = (value: string) => String(value == null ? '' : value)
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-const T = (key: string, fallback: string, vars?: Record<string, string>) => {
-  let text = fallback != null ? fallback : key;
-  if (vars) for (const [k, v] of Object.entries(vars)) text = text.replace(`{${k}}`, String(v));
-  return text;
-};
-
-const globalScope = globalThis as unknown as Record<string, unknown>;
-
-/** 模块级装配：views.js 是 IIFE，require 只执行一次并把 render 挂在
- *  window.CogAssets 上；此后每次断言只改 store 再重画（与真实页面同构）。 */
-let cogAssets: Record<string, unknown> | null = null;
-let domRoot: { innerHTML: string } | null = null;
-function ensureModule(): { cogAssets: Record<string, unknown>; domRoot: { innerHTML: string } } {
-  if (cogAssets && domRoot) return { cogAssets, domRoot };
-  cogAssets = {
-    T, esc, fmtDate: () => '2026/09/15 10:00',
-    TABS: [
-      { id: 'tree', titleKey: 'cognition.tab_tree', title: '认知树', disabled: true },
-      { id: 'overview', titleKey: 'cognition.tab_overview', title: '我的认知' },
-      { id: 'ontology', titleKey: 'cognition.tab_ontology', title: '本体' },
-      { id: 'activity', titleKey: 'cognition.tab_activity', title: '系统活动' },
-      { id: 'settings', titleKey: 'cognition.tab_settings', title: '整理设置' },
-    ],
-    // stats 从 store 动态算（口径同 core.js）：attention 行的断言依赖它。
-    stats: () => {
-      const store = (cogAssets as Record<string, unknown>).store as Record<string, unknown>;
-      const sourceIssues = ((store.sources as Array<{ items?: Array<{ kind?: string; status?: string; statusReason?: string }> }> | undefined) || [])
-        .flatMap((group) => (Array.isArray(group.items) ? group.items : []))
-        .filter((item) => String(item.kind || '') !== 'execution_evaluation'
-          && (item.status === 'failed'
-            || (item.status === 'paused' && String(item.statusReason || '') !== 'source_paused'))).length;
-      const failedTasks = Number(((store.captureCounts as { failed?: number } | undefined) || {}).failed || 0);
-      // 与 core.js 的 stats 同口径——任务执行失败单独计数。
-      const captureConvIds = new Set(((store.captures as Array<{ conversationId?: string }> | undefined) || [])
-        .map((capture) => String(capture.conversationId || '')).filter(Boolean));
-      const taskFailed = ((store.sources as Array<{ items?: Array<{ id?: string; lastTurnFailed?: boolean }> }> | undefined) || [])
-        .flatMap((group) => (Array.isArray(group.items) ? group.items : []))
-        .filter((item) => item && item.lastTurnFailed === true
-          && !captureConvIds.has(String(item.id || ''))).length;
-      return {
-        confirmed: 0, pending: 0, validated: 0, transferOk: 0,
-        sourceIssues, failedTasks, taskFailed, coveredAssets: 0, proofCount: 0, attention: 0,
-      };
-    },
-    store: {
-      loaded: true, loading: false, errors: [],
-      route: { name: 'overview', category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '' },
-      captures: [], captureSettings: null,
-      sources: [], proofs: [], assets: [], assetCapabilities: { versionedUpdate: true }, candidates: [],
-      organizeSettingsOpen: false, organizeListExpanded: true,
-    },
-  };
-  domRoot = { innerHTML: '' };
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const formUi = require('../../src/renderer/modules/ui-form.js');
-  const { uiEmptyState } = require('../../src/renderer/modules/ui-empty.js');
-  globalScope.window = {
-    CogAssets: cogAssets,
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    uiButton: require('../../src/renderer/modules/ui-button.js').uiButton,
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    uiIconButton: require('../../src/renderer/modules/ui-button.js').uiIconButton,
-    // icons.js 是 IIFE 挂全局（无 CJS 导出）：先 require 触发挂载到 globalThis，
-    // 再取引用给 window stub（views.js 运行时读 window.uiIconHtml）。
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    uiIconHtml: (() => { require('../../src/renderer/modules/icons.js'); return (globalThis as unknown as Record<string, unknown>).uiIconHtml; })(),
-    ...formUi,
-    uiEmptyState,
-    uiCard: require('../../src/renderer/modules/ui-card.js').uiCard,
-  };
-  globalScope.document = { getElementById: () => domRoot };
-  // ui-status.js 是 IIFE，把 uiTag 等共享标签组件挂到 window：真机由 index.html
-  // 在 lazy 加载 cognition-assets 之前先加载它（views.js 的版本行读 window.uiTag）。
-  // 夹具的 window 必须和真机一样有这一层，否则测试环境比真机少东西。
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../src/renderer/modules/ui-status.js');
-  // ui-segmented-control.js 同为 index.html 静态共享层（资产编辑表单的敏感级
-  // 三档控件用它）——夹具的 window 必须和真机一样有这一层。
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../src/renderer/modules/ui-segmented-control.js');
-  // ui-page-header.js 同样是 index.html 里的静态共享层（整理报告页头用它）。
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../src/renderer/modules/ui-page-header.js');
-  // ui-structure.js 提供 uiAccordion；整理设置页使用共享手风琴结构，
-  // 测试装配需与 index.html 的共享 UI 加载顺序一致。
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../src/renderer/modules/ui-structure.js');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../src/renderer/modules/cognition-assets/vocabulary.js');
-  require('../../src/renderer/modules/cognition-assets/settings.js');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../src/renderer/modules/cognition-assets/views.js');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../src/renderer/modules/cognition-assets/review-candidate.js');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('../../src/renderer/modules/cognition-assets/review-views.js');
-  require('../../src/renderer/modules/cognition-assets/library.js');
-  return { cogAssets, domRoot };
+/** 每份页面使用独立的真实核心状态，避免首载或详情缓存串到后续用例。 */
+function ensureModule(): { cogAssets: ReturnType<typeof loadCognitionAssets>['ns'] } {
+  return { cogAssets: loadCognitionAssets().ns };
 }
 
-function renderPage(routeName: string, storePatch: Record<string, unknown>, routePatch: Record<string, unknown> = {}): string {
-  const { cogAssets: NS, domRoot: rootEl } = ensureModule();
-  const store = NS.store as Record<string, unknown>;
-  // 「真实使用」白名单由主进程随 recall.timeline.list 下发：
-  // 这里给与真实载荷一致的默认值；用例要考「缺失时 fail-closed」就显式传 []。
-  Object.assign(store, { realUsageKinds: ['usage_recorded', 'projection_confirmed'] }, storePatch);
-  const library = NS.library as { state: Record<string, unknown> };
-  Object.assign(library.state, { query: '', status: routePatch.category === 'deleted' ? 'deleted' : 'library', scope: '', contentCategory: '', sort: 'recent', page: 1, drawer: false, closed: false, dirty: false });
-  store.route = { name: routeName, category: '', assetId: '', candidateId: '', proofEventId: '', captureBucket: '', captureId: '', sourceIssueOpen: '', ...routePatch };
-  rootEl.innerHTML = '';
-  (NS.render as () => void)();
-  const route = store.route as Record<string, unknown>;
-  const dialogBodies = ['sources', 'versions', 'records'].map(kind => (NS.renderLibraryDialog as (kind: string, assetId: string, selected: unknown) => string)(kind, String(route.assetId || ''), route.assetVersionId)).join('');
-  return rootEl.innerHTML + dialogBodies;
+function renderPage(routeName: string, storePatch: Record<string, unknown> = {}, routePatch: Record<string, unknown> = {}): string {
+  const route = { name: routeName, ...routePatch };
+  const loaded = loadCognitionAssets({ organizeListExpanded: true, ...storePatch }, route, {
+    // 本文件核对视图内联文案；locale 完整性由相应源码用例单独检查。
+    t: (key: string) => key,
+  });
+  // 保留本文件空态图标用例的真实共享图标渲染，不使用 helper 的简化 SVG。
+  runInContext(iconsSource, loaded.context, { filename: 'icons.js' });
+  Object.assign(loaded.ns.library.state, {
+    query: '', status: routePatch.category === 'deleted' ? 'deleted' : 'library',
+    scope: '', contentCategory: '', sort: 'recent', page: 1,
+    drawer: false, closed: false, dirty: false,
+  });
+  const html = loaded.render();
+  const dialogBodies = ['sources', 'versions', 'records']
+    .map(kind => loaded.ns.renderLibraryDialog(kind, String(loaded.store.route.assetId || ''), routePatch.assetVersionId)).join('');
+  return html + dialogBodies;
 }
 
 // Read the public shared-select configuration rendered by uiSelect; the
@@ -309,8 +216,8 @@ describe('系统活动与认知设置', () => {
       },
       captureModel: { channel: 'api', available: true, configured: true, authorizationRequired: false },
     });
-    expect(html).toContain('02:30–06:00');
-    expect(html).toContain('不会白天补扫');
+    expect(html).toContain('自动：02:30–06:00；手动“立即扫描”可随时处理。');
+    expect(html).toContain('应用需运行，会消耗模型额度。');
     expect(html).not.toContain('ca-settings-model');
     expect(html).not.toContain('如有新消息，会重新计时');
     expect(html).not.toContain('ca-settings-model');
@@ -1287,11 +1194,12 @@ describe('资产详情（使用记录并入）', () => {
     expect(html).not.toContain('data-act="rollback-asset"');
     // 台账时间必须走统一格式化：此前原样打印存储里的
     // ISO UTC 串，与同页版本记录的本地时间差 8 小时。
-    // 判据取台账块内的 `.when` 单元格：值必须等于本文件装配的 fmtDate 出口输出
-    // （harness 固定值），而不是任何原始 ISO 串。
+    // 判据取台账块内的 `.when` 单元格：值必须等于真实核心的 fmtDate 出口输出，
+    // 而不是任何原始 ISO 串。
     const ledger = html.slice(html.indexOf('使用与管理记录'));
     const whens = [...ledger.matchAll(/<span class="when">([^<]*)<\/span>/g)].map((m) => m[1]);
-    expect(whens).toEqual(['2026/09/15 10:00', '2026/09/15 10:00']);
+    const { cogAssets: NS } = ensureModule();
+    expect(whens).toEqual(['2026-09-25T01:47:12.562Z', '2026-09-25T01:48:26.914Z'].map(NS.fmtDate));
     expect(ledger).not.toContain('2026-09-25T01:47:12.562Z');
     expect(ledger).not.toContain('2026-09-25T01:48:26.914Z');
   });
@@ -1434,7 +1342,8 @@ describe('资产详情（使用记录并入）', () => {
       assetId: 'aa-1', usage: [],
       versions: [
         { assetId: 'aa-1', version: '1', at: '2026-09-10T01:00:00.000Z', reason: 'review_decision:rd_x', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } },
-        { assetId: 'aa-1', version: '2', at: '2026-09-13T01:00:00.000Z', reason: 'synthetic legacy free-text scope "personal" → controlled term "general"', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } },
+        // legacy 是持久化 reason 的机器前缀；合成内容放在前缀后，保留迁移来源分支。
+        { assetId: 'aa-1', version: '2', at: '2026-09-13T01:00:00.000Z', reason: 'legacy synthetic free-text scope "personal" → controlled term "general"', snapshot: { title: 'T', statement: 'S', evidenceRefs: [] } },
         { assetId: 'aa-1', version: '3', at: '2026-09-17T01:00:00.000Z', reason: 'user manual edit', snapshot: { title: 'T2', statement: 'S2', evidenceRefs: [] } },
       ],
     };
@@ -1443,14 +1352,15 @@ describe('资产详情（使用记录并入）', () => {
     // 通用，内部流程词换成用户视角的说法。
     expect(html).toContain('确认沉淀');
     expect(html).toContain('手动编辑');
-    expect(html).not.toContain('legacy free-text scope');
+    expect(html).not.toContain('legacy synthetic free-text scope');
     // 迁移空版本（v2 与 v1 同文）默认隐藏，尾部给展开入口。
     expect(html).not.toContain('data-act="open-asset-version" data-version="2"');
     expect(html).toContain('<option value="3"');
     expect(html).toContain('选择历史版本');
     const expanded = renderPage('overview', { assets: [multi], proofs: [], sources: [], assetVersions: versions }, { assetId: 'aa-1', assetVersionsExpanded: '1' });
     expect(expanded).toContain('<option value="2"');
-    expect(expanded).toContain('系统迁移');
+    expect(expanded).toMatch(/<option value="2"(?: selected)?>v2 · 系统迁移<\/option>/);
+    expect(expanded).not.toContain('legacy synthetic free-text scope');
     expect(expanded).not.toContain('toggle-asset-versions-noise');
   });
 

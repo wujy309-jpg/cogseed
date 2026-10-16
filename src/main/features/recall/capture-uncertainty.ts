@@ -38,6 +38,35 @@ function canonical(value: unknown): unknown {
   return value;
 }
 const digest = (value: unknown) => hash(JSON.stringify(canonical(value)));
+type UncertaintyObservationInput = Pick<CaptureUncertaintyInput, 'candidate' | 'sources' | 'contextMessages' | 'summary' | 'existingTarget'>;
+const blockedAssessment = (): CaptureUncertaintyAssessment => ({ method: 'model_assisted', modelCompleted: false, nonBlocking: false,
+  uncertaintyDisposition: 'content_unresolved', checks: { supported: false, noUnsupportedClaims: false,
+    scopePreserved: false, finalDecisionPreserved: false, priorContentPreserved: false }, evidence: [] });
+function uncertaintySnapshot(input: UncertaintyObservationInput) {
+  const original = { candidate: input.candidate, approvedUserSources: input.sources,
+    completeConversationContext: input.contextMessages, summary: input.summary, existingTarget: input.existingTarget };
+  const message = JSON.stringify(original);
+  const payload = JSON.parse(message) as typeof original;
+  const held: CaptureUncertaintyAssessment = { ...blockedAssessment(), candidateHash: digest(payload.candidate),
+    sourceHash: digest({ sources: payload.approvedUserSources, context: payload.completeConversationContext }), summaryHash: digest(payload.summary),
+    ...(payload.existingTarget ? { targetHash: digest(payload.existingTarget) } : {}), inputHash: digest({ policyVersion: 1, payload }) };
+  return { message, payload, held };
+}
+function completedObservation(payload: ReturnType<typeof uncertaintySnapshot>['payload'],
+  parsed: ReturnType<typeof parseCaptureUncertaintyAssessment>, held: CaptureUncertaintyAssessment): CaptureUncertaintyAssessment {
+  const { evidence: literalEvidence, uncertaintyDisposition, ...checks } = parsed;
+  const evidence: CaptureUncertaintyAssessment['evidence'] = [];
+  for (const ref of literalEvidence) {
+    const row = payload.completeConversationContext.find(row => row.label === ref.label && row.role === 'user');
+    const start = row?.text.indexOf(ref.quote) ?? -1;
+    if (!row || start < 0 || row.text.indexOf(ref.quote, start + 1) >= 0) return { ...held, reason: 'uncertainty_assessment_invalid' };
+    evidence.push({ label: ref.label, ...(row.id ? { messageId: row.id } : {}), start, end: start + ref.quote.length, quoteHash: hash(ref.quote) });
+  }
+  const nonBlocking = uncertaintyDisposition !== 'content_unresolved' && Object.values(checks).every(value => value === true) && evidence.length > 0;
+  return { ...held, modelCompleted: true, nonBlocking, uncertaintyDisposition, checks, evidence,
+    ...(!nonBlocking ? { reason: uncertaintyDisposition === 'content_unresolved'
+      ? 'uncertainty_content_unresolved' as const : 'uncertainty_semantic_support_failed' as const } : {}) };
+}
 
 /** Strict classifications never substitute for independently checked meaning.
  * Literal evidence must resolve in a USER source and overlap an approved topic. */
@@ -55,23 +84,29 @@ export function parseCaptureUncertaintyAssessment(raw: string, sources: Groundin
   return { ...assessment, uncertaintyDisposition: uncertaintyDisposition as CaptureUncertaintyDisposition };
 }
 
+/** Reuse the merged batch's independent verdict without another model call.
+ * The audit binds the original proposal and exact evidence; `none` cannot clear
+ * a nonempty uncertainty, and ambiguous evidence offsets remain unavailable. */
+export function observeCaptureBatchUncertainty(input: UncertaintyObservationInput,
+  assessment?: { checks: CaptureGroundingAssessment; uncertaintyDisposition: string },
+  unavailableReason?: CaptureUncertaintyAssessment['reason']): CaptureUncertaintyAssessment {
+  const { payload, held } = uncertaintySnapshot(input);
+  if (!assessment) return { ...held, reason: unavailableReason || 'uncertainty_assessment_invalid' };
+  try {
+    const parsed = parseCaptureUncertaintyAssessment(JSON.stringify({ ...assessment.checks,
+      uncertaintyDisposition: assessment.uncertaintyDisposition }), payload.approvedUserSources);
+    return completedObservation(payload, parsed, held);
+  } catch { return { ...held, reason: 'uncertainty_assessment_invalid' }; }
+}
+
 /** Caller may clear only the blocking field after nonBlocking=true, retaining
  * the original judgment/boundaries and this source-bound classification audit. */
 export async function assessRecallCaptureUncertainty(userId: string, input: CaptureUncertaintyInput): Promise<CaptureUncertaintyAssessment> {
-  const blocked: CaptureUncertaintyAssessment = { method: 'model_assisted', modelCompleted: false, nonBlocking: false,
-    uncertaintyDisposition: 'content_unresolved', checks: { supported: false, noUnsupportedClaims: false,
-      scopePreserved: false, finalDecisionPreserved: false, priorContentPreserved: false }, evidence: [] };
+  const blocked = blockedAssessment();
   try {
     if (!input.candidate.uncertainty?.trim()) return { ...blocked, reason: 'uncertainty_missing' };
-    const original = { candidate: input.candidate, approvedUserSources: input.sources,
-      completeConversationContext: input.contextMessages, summary: input.summary, existingTarget: input.existingTarget };
-    const message = JSON.stringify(original);
     // Freeze the exact source/candidate snapshot sent to the independent model.
-    const payload = JSON.parse(message) as typeof original;
-    const hashes = { candidateHash: digest(payload.candidate), sourceHash: digest({ sources: payload.approvedUserSources,
-      context: payload.completeConversationContext }), summaryHash: digest(payload.summary),
-      ...(payload.existingTarget ? { targetHash: digest(payload.existingTarget) } : {}), inputHash: digest({ policyVersion: 1, payload }) };
-    const held = { ...blocked, ...hashes };
+    const { message, payload, held } = uncertaintySnapshot(input);
     if (message.length > 96_000) return { ...held, reason: 'uncertainty_context_too_large' };
     const context = payload.completeConversationContext;
     const sources = payload.approvedUserSources;
@@ -109,19 +144,7 @@ export async function assessRecallCaptureUncertainty(userId: string, input: Capt
     let parsed: ReturnType<typeof parseCaptureUncertaintyAssessment>;
     try { parsed = parseCaptureUncertaintyAssessment(text, sources); }
     catch { return { ...held, reason: 'uncertainty_assessment_invalid' }; }
-    const { evidence: literalEvidence, uncertaintyDisposition, ...checks } = parsed;
-    const evidence: CaptureUncertaintyAssessment['evidence'] = [];
-    for (const ref of literalEvidence) {
-      const row = context.find(row => row.label === ref.label && row.role === 'user')!;
-      const start = row.text.indexOf(ref.quote);
-      if (start < 0 || row.text.indexOf(ref.quote, start + 1) >= 0) return { ...held, reason: 'uncertainty_assessment_invalid' };
-      evidence.push({ label: ref.label, ...(row.id ? { messageId: row.id } : {}), start, end: start + ref.quote.length, quoteHash: hash(ref.quote) });
-    }
-    const allSupported = Object.values(checks).every(value => value === true);
-    const nonBlocking = uncertaintyDisposition !== 'content_unresolved' && allSupported && evidence.length > 0;
-    return { ...held, modelCompleted: true, nonBlocking, uncertaintyDisposition, checks, evidence,
-      ...(!nonBlocking ? { reason: uncertaintyDisposition === 'content_unresolved'
-        ? 'uncertainty_content_unresolved' as const : 'uncertainty_semantic_support_failed' as const } : {}) };
+    return completedObservation(payload, parsed, held);
   } catch (error) {
     if (input.signal?.aborted || (error as { code?: string })?.code === 'ABORT_ERR') {
       return { ...blocked, interrupted: true, reason: 'uncertainty_model_unavailable' };

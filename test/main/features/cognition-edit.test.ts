@@ -3,7 +3,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 const interaction = vi.hoisted(() => vi.fn());
-vi.mock('../../../src/main/features/chat_events/interaction-hub', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/main/features/chat_events/interaction-hub')>(), requestInteraction: interaction }));
+const interactionHub = vi.hoisted(() => ({ actual: undefined as typeof import('../../../src/main/features/chat_events/interaction-hub') | undefined }));
+vi.mock('../../../src/main/features/chat_events/interaction-hub', async importOriginal => {
+  // resetModules reloads importActual, but not this mock factory. Keep the real
+  // request and cancel functions on one hub rather than splitting pending maps.
+  const actual = await importOriginal<typeof import('../../../src/main/features/chat_events/interaction-hub')>();
+  interactionHub.actual = actual;
+  return { ...actual, requestInteraction: interaction };
+});
 vi.mock('../../../src/main/logger', () => ({ createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) }));
 vi.mock('../../../src/main/features/recall/store-events', () => ({ notifyCognitionWrite: vi.fn() }));
 vi.mock('../../../src/main/features/kb_indexer', () => ({ enqueue: () => {}, kbEvents: { on: () => {}, off: () => {}, emit: () => {} } }));
@@ -44,7 +51,7 @@ async function fullSave(env: Awaited<ReturnType<typeof setup>>) {
 describe('host cognition edits', () => {
   it('legacy edit tool stops a real bridged approval and rejects a late allow', async () => {
     const env = await setup();
-    const hub = await vi.importActual<typeof import('../../../src/main/features/chat_events/interaction-hub')>('../../../src/main/features/chat_events/interaction-hub');
+    const hub = interactionHub.actual!;
     interaction.mockImplementation(hub.requestInteraction);
     let requested!: (id: string) => void;
     const request = new Promise<string>(resolve => { requested = resolve; });
@@ -66,7 +73,10 @@ describe('host cognition edits', () => {
       expect(await env.assets.readAbilityAsset(uid, 'aa-preference')).toMatchObject({ version: '1', statement: original });
       expect(env.ontology.readOntologyDocument(uid)).toEqual(before);
       expect((await env.store.createRecallCollectionReader(uid, 'candidates')).ids).toEqual([]);
-    } finally { hub._setBroadcastForTest(null); }
+    } finally {
+      hub.cancelInteractionsForTurn('turn-one', { uid, cid: 'chat-one' });
+      hub._setBroadcastForTest(null);
+    }
   });
   it('legacy edit tool forwards the committed-write handshake and retains the real receipt after Stop', async () => {
     const env = await setup();
@@ -97,7 +107,7 @@ describe('host cognition edits', () => {
 
   it('stops a real edit approval and ignores a late allow without changing the asset or shared rule', async () => {
     const env = await setup();
-    const hub = await vi.importActual<typeof import('../../../src/main/features/chat_events/interaction-hub')>('../../../src/main/features/chat_events/interaction-hub');
+    const hub = interactionHub.actual!;
     interaction.mockImplementation(hub.requestInteraction);
     let requested!: (id: string) => void;
     const request = new Promise<string>(resolve => { requested = resolve; });
@@ -118,7 +128,10 @@ describe('host cognition edits', () => {
       expect(await env.assets.readAbilityAsset(uid, 'aa-preference')).toMatchObject({ version: '1', statement: original });
       expect(env.ontology.readOntologyDocument(uid)).toEqual(before);
       expect((await env.store.createRecallCollectionReader(uid, 'candidates')).ids).toEqual([]);
-    } finally { hub._setBroadcastForTest(null); }
+    } finally {
+      hub.cancelInteractionsForTurn('turn-one', { uid, cid: 'chat-one' });
+      hub._setBroadcastForTest(null);
+    }
   });
   it.each(['asset-record', 'store', 'ontology-store'] as const)('does not save after cancellation while waiting for the %s lock', async lockKind => {
     const env = await setup();

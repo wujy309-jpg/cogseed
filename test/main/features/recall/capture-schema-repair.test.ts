@@ -6,7 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { captureSummaryModelResponse } from '../../../helpers/capture-summary-model';
 import { drainMainRuntimeForTest } from '../../../helpers/drain-main-runtime';
-const mocks = vi.hoisted(() => ({ summary: vi.fn(), value: vi.fn(), extract: vi.fn(), grounding: vi.fn(), uncertainty: vi.fn(), buildRunner: vi.fn(),
+const mocks = vi.hoisted(() => ({ summary: vi.fn(), value: vi.fn(), extract: vi.fn(), formation: vi.fn(), buildRunner: vi.fn(),
   getMessages: vi.fn(), getMessagesPage: vi.fn(), getConversation: vi.fn(), listConversations: vi.fn() }));
 vi.mock('../../../../src/main/features/auth', () => ({
   listEntriesForUser: async () => ({ entries: [{ provider: 'synthetic-configured-provider', model: 'synthetic-configured-model' }] }),
@@ -31,12 +31,20 @@ beforeEach(() => {
   mocks.summary.mockReset().mockImplementation(captureSummaryModelResponse);
   mocks.value.mockReset().mockResolvedValue({ text: JSON.stringify({ eligible: true, reason: '明确需要长期复用会议准备结构', evidence: [{ messageId: 'message-user', quote: source }] }), meta: {} });
   mocks.extract.mockReset().mockResolvedValue(response([valid]));
-  mocks.uncertainty.mockReset();
-  mocks.grounding.mockReset();
-  mocks.buildRunner.mockReset().mockImplementation(async (options: { sessionId: string }) => ({ runner: { run:
-    options.sessionId.startsWith('memory-summary-') ? mocks.summary : options.sessionId.startsWith('memory-value-') ? mocks.value
-      : options.sessionId.startsWith('memory-uncertainty-') ? mocks.uncertainty
-      : options.sessionId.startsWith('memory-grounding-') ? mocks.grounding : mocks.extract } }));
+  mocks.formation.mockReset().mockImplementation((input: { message: string }) => {
+    const { candidates } = JSON.parse(input.message);
+    return { text: JSON.stringify({ assessments: candidates.map((item: { index: number; candidate: { uncertainty?: string }; sources: Array<{ label: string; approvedQuotes: string[] }> }) => ({
+      index: item.index, checks: supportedChecks(item.sources[0].approvedQuotes[0], item.sources[0].label),
+      uncertaintyDisposition: item.candidate.uncertainty ? 'effect_unverified' : 'none',
+    })) }), meta: {} };
+  });
+  mocks.buildRunner.mockReset().mockImplementation(async (options: { sessionId: string }) => {
+    const run = options.sessionId.startsWith('memory-summary-') ? mocks.summary : options.sessionId.startsWith('memory-value-') ? mocks.value
+      : options.sessionId.startsWith('memory-formation-recall-') ? mocks.formation
+        : options.sessionId.startsWith('memory-extract-') ? mocks.extract : undefined;
+    if (!run) throw new Error(`Unexpected capture model session: ${options.sessionId}`);
+    return { runner: { run } };
+  });
   vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date(2026, 9, 12, 3));
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'cogseed-extraction-repair-'));
   previous = process.env.COGSEED_WORKSPACE_ROOT; process.env.COGSEED_WORKSPACE_ROOT = root;
@@ -93,9 +101,18 @@ it('regenerates an unowned top-level ontology plan once from the identical sourc
       refs: [{ moduleId: 'meeting-module', recordId: 'meeting-rule', versionPolicy: 'current', sharedBody: true }] };
     mocks.extract.mockResolvedValueOnce({ text: JSON.stringify({ candidates: [update], ontologyChanges: plan }), meta: {} })
       .mockResolvedValueOnce(response([{ ...update, ontologyChanges: plan }]));
+    mocks.formation.mockResolvedValueOnce({ text: JSON.stringify({ assessments: [{ index: 0, checks: supportedChecks(source),
+      uncertaintyDisposition: 'none', comparison: { relation: 'changed', targetAssetId: target.id, targetVersion: target.version,
+        targetQuote: previousBody, reason: '用户明确把同一会议模板的待决策问题更新为三个。' },
+      sourceRuleConclusions: [{ recordId: 'meeting-rule', status: 'resolved',
+        expectedContract: { strength: 'default', condition: null, effect: { kind: 'note' }, exception: '' },
+        topicEvidence: [{ label: 'm1', quote: source }],
+        fieldEvidence: { strength: [{ label: 'm1', quote: source }], condition: [], effect: [], exception: [] } }],
+    }] }), meta: {} });
     const result = await f.capture.runRecallCapture(userId, f.id);
     expect(result).toMatchObject({ status: 'review_ready', extractionRepairAttempted: true });
     expect(mocks.extract).toHaveBeenCalledTimes(2);
+    expect(mocks.formation).toHaveBeenCalledTimes(1);
     const [first, repair] = extractionOptions();
     expect(first.modelCandidates).toEqual(route); expect(repair.modelCandidates).toEqual(route);
     expect(repair.systemPrompt).toContain('Each group owns its complete cognition or ontology explanation and its evidence.');
@@ -245,33 +262,39 @@ const method = { ...valid, judgment: methodBody, summary: '超时故障排查方
   value: '供后续类似超时故障排查复用完整步骤，减少没有证据的归因。',
   applicableWhen: ['处理有请求时间线的超时故障'], forbiddenWhen: ['证据不足时直接判断原因'],
   uncertainty: '该方法尚未在任何具体故障案例中使用或验证效果。' };
-const supportedUncertainty = (disposition: string, quote: string) => ({ text: JSON.stringify({ supported: true, noUnsupportedClaims: true,
-  scopePreserved: true, finalDecisionPreserved: true, priorContentPreserved: true, uncertaintyDisposition: disposition,
-  evidence: [{ label: 'm1', quote }] }), meta: {} });
+function supportedChecks(quote: string, label = 'm1') { return { supported: true, noUnsupportedClaims: true,
+  scopePreserved: true, finalDecisionPreserved: true, priorContentPreserved: true, evidence: [{ label, quote }] }; }
+const formationResponse = (checks: ReturnType<typeof supportedChecks>, uncertaintyDisposition = 'none') => ({
+  text: JSON.stringify({ assessments: [{ index: 0, checks, uncertaintyDisposition }] }), meta: {} });
+const supportedUncertainty = (disposition: string, quote: string) => formationResponse(supportedChecks(quote), disposition);
 
 it('forms an untested complete method through independent uncertainty checking while preserving exact body and boundaries for human review', async () => {
   replaceSource(methodSource);
   mocks.extract.mockResolvedValueOnce(response([method]));
-  mocks.uncertainty.mockResolvedValueOnce(supportedUncertainty('effect_unverified', methodBody));
+  mocks.formation.mockResolvedValueOnce(supportedUncertainty('effect_unverified', methodBody));
   const f = await fixture();
   try {
     const result = await f.capture.runRecallCapture(userId, f.id);
     expect(result.status).toBe('review_ready');
-    expect(mocks.extract).toHaveBeenCalledTimes(1); expect(mocks.uncertainty).toHaveBeenCalledTimes(1);
+    expect(mocks.extract).toHaveBeenCalledTimes(1); expect(mocks.formation).toHaveBeenCalledTimes(1);
     const [candidate] = await f.candidates.listRecallCandidates(userId);
     expect(candidate).toMatchObject({ status: 'pending_review', judgment: method.judgment, suggestedScope: method.suggestedScope,
       applicableWhen: method.applicableWhen, forbiddenWhen: method.forbiddenWhen });
     expect(candidate.uncertainty).toBeUndefined(); expect(candidate.reviewDecisionId).toBeUndefined();
     expect(candidate.autoReview).toBeUndefined(); expect(candidate.promotedAssetId).toBeUndefined();
     expect(await f.assets.listAbilityAssets(userId)).toEqual([]);
-    const payload = JSON.parse(mocks.uncertainty.mock.calls[0][0].message);
-    expect(payload.candidate.uncertainty).toBe(method.uncertainty);
-    expect(payload.candidate.judgment).toBe(method.judgment);
+    const payload = JSON.parse(mocks.formation.mock.calls[0][0].message);
+    expect(payload.candidates[0].candidate.uncertainty).toBe(method.uncertainty);
+    expect(payload.candidates[0].candidate.judgment).toBe(method.judgment);
     expect(payload.completeConversationContext).toEqual([
       expect.objectContaining({ role: 'user', text: methodSource }), expect.objectContaining({ role: 'assistant' }),
     ]);
     expect(result.uncertaintyAssessments).toEqual([expect.objectContaining({ candidateIndex: 0, nonBlocking: true,
-      uncertaintyDisposition: 'effect_unverified', method: 'model_assisted', candidateHash: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
+      modelCompleted: true, uncertaintyDisposition: 'effect_unverified', method: 'model_assisted',
+      candidateHash: expect.stringMatching(/^[a-f0-9]{64}$/), sourceHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+      inputHash: expect.stringMatching(/^[a-f0-9]{64}$/), evidence: [{ label: 'm1', messageId: 'message-user',
+        start: methodSource.indexOf(methodBody), end: methodSource.indexOf(methodBody) + methodBody.length,
+        quoteHash: expect.stringMatching(/^[a-f0-9]{64}$/) }] })]);
     const audit = JSON.stringify(result.uncertaintyAssessments);
     expect(audit).not.toContain(methodBody); expect(audit).not.toContain(method.uncertainty);
     expect(audit).not.toContain(methodSource);
@@ -282,15 +305,48 @@ it('retains mixed substantive scope uncertainty instead of blanking it because e
   replaceSource(methodSource);
   const uncertain = { ...method, uncertainty: '该方法效果尚未验证；适用的具体项目和故障范围也尚未确定。' };
   mocks.extract.mockResolvedValueOnce(response([uncertain]));
-  mocks.uncertainty.mockResolvedValueOnce(supportedUncertainty('content_unresolved', methodBody));
+  mocks.formation.mockResolvedValueOnce(supportedUncertainty('content_unresolved', methodBody));
   const f = await fixture();
   try {
     const result = await f.capture.runRecallCapture(userId, f.id);
     expect(result).toMatchObject({ status: 'no_candidate', filterReason: 'candidate_quality' });
     expect(await f.candidates.listRecallCandidates(userId)).toEqual([]);
     expect(result.uncertaintyAssessments).toEqual([expect.objectContaining({ nonBlocking: false, uncertaintyDisposition: 'content_unresolved' })]);
-    expect(JSON.parse(mocks.uncertainty.mock.calls[0][0].message).candidate.uncertainty).toBe(uncertain.uncertainty);
-    expect(mocks.extract).toHaveBeenCalledTimes(1); expect(mocks.uncertainty).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mocks.formation.mock.calls[0][0].message).candidates[0].candidate.uncertainty).toBe(uncertain.uncertainty);
+    expect(mocks.extract).toHaveBeenCalledTimes(1); expect(mocks.formation).toHaveBeenCalledTimes(1);
+  } finally { f.stop(); }
+});
+
+it('assesses every ambiguous proposal together once and retains separate source-bound uncertainty audits', async () => {
+  const secondBody = '复盘方法：先核对事件发生顺序，再对照变更记录，最后列出仍缺少证据的因果假设；没有对照证据时不把先后关系当作因果结论。';
+  const second = { ...method, judgment: secondBody, summary: '变更复盘方法', value: '供后续变更复盘复用，减少将事件先后顺序误当成因果证据。' };
+  replaceSource(`${methodSource}\n后续变更复盘反复复用这套${secondBody}`);
+  mocks.extract.mockResolvedValueOnce(response([method, second]));
+  const f = await fixture();
+  try {
+    const result = await f.capture.runRecallCapture(userId, f.id);
+    expect(result.status).toBe('review_ready');
+    expect(mocks.extract).toHaveBeenCalledTimes(1); expect(mocks.formation).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mocks.formation.mock.calls[0][0].message).candidates.map((item: { index: number }) => item.index)).toEqual([0, 1]);
+    expect(result.uncertaintyAssessments).toEqual([0, 1].map(candidateIndex => expect.objectContaining({ candidateIndex, modelCompleted: true, nonBlocking: true })));
+    expect((await f.candidates.listRecallCandidates(userId)).map(row => row.judgment).sort()).toEqual([methodBody, secondBody].sort());
+    expect(await f.assets.listAbilityAssets(userId)).toEqual([]);
+  } finally { f.stop(); }
+});
+
+it.each(['none', 'ambiguous_evidence'])('keeps an incomplete uncertainty audit %s retryable without accepting or caching its otherwise positive verdict', async kind => {
+  replaceSource(kind === 'ambiguous_evidence' ? `${methodSource}\n${methodSource}` : methodSource);
+  mocks.extract.mockResolvedValueOnce(response([method]));
+  mocks.formation.mockResolvedValueOnce(supportedUncertainty(kind === 'none' ? 'none' : 'effect_unverified', methodBody));
+  const f = await fixture();
+  try {
+    const result = await f.capture.runRecallCapture(userId, f.id);
+    expect(result).toMatchObject({ status: 'failed', errorCode: 'candidate_support_unavailable',
+      candidateSupportUnavailable: [{ candidateIndex: 0, stage: 'uncertainty', reason: 'uncertainty_assessment_invalid', candidateHash: expect.any(String) }],
+      uncertaintyAssessments: [expect.objectContaining({ modelCompleted: false, nonBlocking: false, reason: 'uncertainty_assessment_invalid' })] });
+    expect(result.formationBatchAssessment).toBeUndefined();
+    expect(await f.candidates.listRecallCandidates(userId)).toEqual([]);
+    expect(mocks.formation).toHaveBeenCalledTimes(1);
   } finally { f.stop(); }
 });
 
@@ -304,7 +360,7 @@ it.each([
   const proposal = { ...valid, judgment: datedBody, summary: '项目技术职责起始', contentCategory: 'unclassified',
     value: '在后续沟通和分工中保留用户明确陈述的职责及起始边界。', suggestedScope: '项目职责沟通', uncertainty };
   mocks.extract.mockResolvedValueOnce(response([proposal]));
-  mocks.uncertainty.mockResolvedValueOnce(supportedUncertainty(disposition, datedSource));
+  mocks.formation.mockResolvedValueOnce(supportedUncertainty(disposition, datedSource));
   const f = await fixture();
   try {
     const result = await f.capture.runRecallCapture(userId, f.id);
@@ -315,7 +371,7 @@ it.each([
     expect(candidate.judgment).not.toContain('2026年9月21');
     expect(result.uncertaintyAssessments).toEqual([expect.objectContaining({ nonBlocking: true, uncertaintyDisposition: disposition })]);
     expect(await f.assets.listAbilityAssets(userId)).toEqual([]);
-    expect(mocks.uncertainty).toHaveBeenCalledTimes(1);
+    expect(mocks.formation).toHaveBeenCalledTimes(1);
   } finally { f.stop(); }
 });
 
@@ -395,7 +451,7 @@ function semanticFixture() { replaceSource(semanticSource); mocks.extract.mockRe
 
 it.each(['assessment_invalid', 'model_unavailable'])('distinguishes completed unsupported from %s and leaves unassessed source retryable without weak content', async reason => {
   semanticFixture();
-  mocks.grounding.mockResolvedValueOnce(reason === 'assessment_invalid' ? { text: 'not a valid assessment', meta: {} }
+  mocks.formation.mockResolvedValueOnce(reason === 'assessment_invalid' ? { text: 'not a valid assessment', meta: {} }
     : { text: '', meta: { error: { kind: 'network', message: 'private provider details' } } });
   const f = await fixture();
   try {
@@ -405,14 +461,14 @@ it.each(['assessment_invalid', 'model_unavailable'])('distinguishes completed un
     expect(result.filterReason).toBeUndefined();
     expect(await f.candidates.listRecallCandidates(userId)).toEqual([]);
     expect(await f.assets.listAbilityAssets(userId)).toEqual([]);
-    expect(mocks.grounding).toHaveBeenCalledTimes(1);
+    expect(mocks.formation).toHaveBeenCalledTimes(1);
     const audit = JSON.stringify(result.candidateSupportUnavailable);
     expect(audit).not.toContain(semanticProposal.judgment); expect(audit).not.toContain('private provider details');
   } finally { f.stop(); }
 });
 
 it('keeps a complete explicit negative semantic verdict terminal rather than retrying it as a service failure', async () => {
-  semanticFixture(); mocks.grounding.mockResolvedValueOnce({ text: JSON.stringify({ ...semanticAssessment, supported: false, noUnsupportedClaims: false }), meta: {} });
+  semanticFixture(); mocks.formation.mockResolvedValueOnce(formationResponse({ ...semanticAssessment, supported: false, noUnsupportedClaims: false }));
   const f = await fixture();
   try {
     const result = await f.capture.runRecallCapture(userId, f.id);
@@ -423,8 +479,8 @@ it('keeps a complete explicit negative semantic verdict terminal rather than ret
 });
 
 it('retries a source-support outage only in the next admitted night and preserves disabled and daytime gates', async () => {
-  semanticFixture(); mocks.grounding.mockResolvedValueOnce({ text: 'invalid independent response', meta: {} })
-    .mockResolvedValueOnce({ text: JSON.stringify(semanticAssessment), meta: {} });
+  semanticFixture(); mocks.formation.mockResolvedValueOnce({ text: 'invalid independent response', meta: {} })
+    .mockResolvedValueOnce(formationResponse(semanticAssessment));
   const f = await fixture();
   try {
     expect(await f.capture.runRecallCapture(userId, f.id)).toMatchObject({ status: 'failed', errorCode: 'candidate_support_unavailable', attempt: 1 });
@@ -436,7 +492,7 @@ it('retries a source-support outage only in the next admitted night and preserve
     vi.setSystemTime(new Date(2026, 9, 13, 12));
     expect(await f.capture.runNightlyCaptureSweep(userId, new Date().toISOString(), await f.settings.readRecallCaptureSettings(userId)))
       .toMatchObject({ ran: false, reason: 'outside_nightly_window' });
-    expect(mocks.grounding).toHaveBeenCalledTimes(1);
+    expect(mocks.formation).toHaveBeenCalledTimes(1);
     vi.setSystemTime(new Date(2026, 9, 13, 3));
     expect(await f.capture.runNightlyCaptureSweep(userId, new Date().toISOString(), await f.settings.readRecallCaptureSettings(userId)))
       .toMatchObject({ ran: true, retried: 1 });
@@ -446,7 +502,7 @@ it('retries a source-support outage only in the next admitted night and preserve
     expect(retried.autoApprovalEpoch).toBeUndefined();
     const [candidate] = await f.candidates.listRecallCandidates(userId);
     expect(candidate).toMatchObject({ judgment: semanticProposal.judgment, status: 'pending_review' });
-    expect(mocks.grounding).toHaveBeenCalledTimes(2);
+    expect(mocks.formation).toHaveBeenCalledTimes(2);
     expect(await f.assets.listAbilityAssets(userId)).toEqual([]);
   } finally { f.stop(); }
 });
@@ -455,7 +511,7 @@ it('keeps an already saved complete candidate when another item cannot finish it
   semanticFixture();
   const first = { ...semanticProposal, judgment: '以后处理我的复杂技术问题时，我希望先给结论，再解释关键理由。', summary: '技术解释顺序' };
   mocks.extract.mockResolvedValueOnce(response([first, semanticProposal]));
-  mocks.grounding.mockResolvedValueOnce({ text: 'invalid assessment for the later item', meta: {} });
+  mocks.formation.mockResolvedValueOnce({ text: 'invalid assessment for the later item', meta: {} });
   const f = await fixture();
   try {
     const result = await f.capture.runRecallCapture(userId, f.id);
@@ -464,12 +520,14 @@ it('keeps an already saved complete candidate when another item cannot finish it
     expect(result.errorCode).toBeUndefined();
     const rows = await f.candidates.listRecallCandidates(userId);
     expect(rows).toHaveLength(1); expect(rows[0]).toMatchObject({ judgment: first.judgment, status: 'pending_review' });
+    expect(mocks.formation).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mocks.formation.mock.calls[0][0].message).candidates.map((item: { index: number }) => item.index)).toEqual([1]);
     expect(await f.assets.listAbilityAssets(userId)).toEqual([]);
   } finally { f.stop(); }
 });
 
 it('preserves a model-aborted grounding check as queued rather than unsupported or failed', async () => {
-  semanticFixture(); mocks.grounding.mockResolvedValueOnce({ text: '', meta: { aborted: true } });
+  semanticFixture(); mocks.formation.mockResolvedValueOnce({ text: '', meta: { aborted: true } });
   const f = await fixture();
   try {
     const result = await f.capture.runRecallCapture(userId, f.id);
@@ -481,7 +539,7 @@ it('preserves a model-aborted grounding check as queued rather than unsupported 
 
 it.each(['uncertainty_assessment_invalid', 'uncertainty_model_unavailable'])('retains uncertainty evaluation %s as retryable failure distinct from true content_unresolved', async reason => {
   replaceSource(methodSource); mocks.extract.mockResolvedValueOnce(response([method]));
-  mocks.uncertainty.mockResolvedValueOnce(reason === 'uncertainty_assessment_invalid' ? { text: 'invalid independent classification', meta: {} }
+  mocks.formation.mockResolvedValueOnce(reason === 'uncertainty_assessment_invalid' ? { text: 'invalid independent classification', meta: {} }
     : { text: '', meta: { error: { kind: 'network', message: 'private uncertainty details' } } });
   const f = await fixture();
   try {
@@ -496,7 +554,7 @@ it.each(['uncertainty_assessment_invalid', 'uncertainty_model_unavailable'])('re
 
 it('requeues host-interrupted uncertainty evaluation without clearing its original content uncertainty', async () => {
   replaceSource(methodSource); mocks.extract.mockResolvedValueOnce(response([method]));
-  mocks.uncertainty.mockResolvedValueOnce({ text: '', meta: { aborted: true } });
+  mocks.formation.mockResolvedValueOnce({ text: '', meta: { aborted: true } });
   const f = await fixture();
   try {
     const result = await f.capture.runRecallCapture(userId, f.id);
@@ -506,9 +564,9 @@ it('requeues host-interrupted uncertainty evaluation without clearing its origin
   } finally { f.stop(); }
 });
 
-it('requeues unavailable grounding when the window closes during the model call instead of settling a daytime failure', async () => {
-  semanticFixture(); mocks.grounding.mockImplementationOnce(async () => { vi.setSystemTime(new Date(2026, 9, 12, 6));
-    return { text: '', meta: { error: { kind: 'network' } } }; });
+it.each(['completed', 'unavailable'])('requeues %s grounding when the window closes during the model call instead of settling a daytime result', async outcome => {
+  semanticFixture(); mocks.formation.mockImplementationOnce(async () => { vi.setSystemTime(new Date(2026, 9, 12, 6));
+    return outcome === 'completed' ? formationResponse(semanticAssessment) : { text: '', meta: { error: { kind: 'network' } } }; });
   const f = await fixture();
   try {
     const result = await f.capture.runRecallCapture(userId, f.id);

@@ -495,17 +495,19 @@ describe('the sole nightly cognition pipeline', () => {
       await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
       mocks.runModel.mockResolvedValueOnce(answer({ ...positive, evidence: [{ messageId: 'u1', quote: target.statement }] })).mockResolvedValueOnce(answer({ candidates: [{
         judgment: target.statement, summary: 'Traceable decisions', value: 'Future decisions remain auditable.',
-        uncertainty: 'Compare the preserved original boundary with the complete target.',
+        uncertainty: 'Whether this traceability policy improves future decisions remains unverified.',
         suggestedScope: 'project', suggestedAction: 'update', targetAssetId: target.id, risk: 'low', evidence: ['m1'], comparison,
       }] })).mockResolvedValueOnce(answer({ assessments: [{ index: 0,
         checks: { supported: true, noUnsupportedClaims: true, scopePreserved: true, finalDecisionPreserved: true,
           priorContentPreserved: true, evidence: [{ label: 'm1', quote: target.statement }] },
-        uncertaintyDisposition: 'none', comparison,
+        uncertaintyDisposition: 'effect_unverified', comparison,
       }] }));
       mocks.saveCandidate.mockRejectedValueOnce(new Error('interrupted before save'));
       const failed = await capture.runRecallCapture(USER, (await records())[0].id);
       expect(failed.errorCode).toBe('candidate_save_failed');
       expect(failed.formationCheckpoint?.groups).toHaveLength(1);
+      expect(failed.uncertaintyAssessments).toEqual([expect.objectContaining({ candidateIndex: 0,
+        modelCompleted: true, nonBlocking: true, uncertaintyDisposition: 'effect_unverified' })]);
       expect(permitted.mock.calls[0][2]).toMatchObject({ projectId: 'project-1' });
       expect(permitted.mock.calls.every(call => !call[2]?.taskText && !call[2]?.purpose)).toBe(true);
       await capture.updateRecallJsonRecord(USER, 'captures', failed.id, raw => ({ ...raw!, status: 'queued' }));
@@ -558,6 +560,13 @@ describe('the sole nightly cognition pipeline', () => {
           record: { kind: 'rule', moduleId: 'project-module', name: 'Traceable decisions', requirement: 'Always keep decisions traceable.',
             strength: 'suggestion', condition: null, effect: { kind: 'note' }, exception: '' } },
       ] },
+    }] })).mockResolvedValueOnce(answer({ assessments: [{ index: 0, uncertaintyDisposition: 'none',
+      checks: { supported: true, noUnsupportedClaims: true, scopePreserved: true, finalDecisionPreserved: true,
+        priorContentPreserved: true, evidence: [{ label: 'm1', quote: 'Always keep decisions traceable.' }] },
+      sourceRuleConclusions: [{ recordId: 'traceability-rule', status: 'resolved',
+        expectedContract: { strength: 'required', condition: null, effect: { kind: 'note' }, exception: '' },
+        topicEvidence: [{ label: 'm1', quote: 'Always keep decisions traceable.' }], fieldEvidence: {
+          strength: [{ label: 'm1', quote: 'Always keep decisions traceable.' }], condition: [], effect: [], exception: [] } }],
     }] }));
     mocks.saveCandidate.mockImplementation(async (_user, input) => ({ ...input, id: 'ontology-candidate', status: 'pending_review' }));
     const result = await capture.runRecallCapture(USER, (await records())[0].id);
@@ -565,6 +574,11 @@ describe('the sole nightly cognition pipeline', () => {
     expect(mocks.saveCandidate.mock.calls[0][1]).toMatchObject({ proposalTarget: 'ontology', formationProposalId: 'traceability',
       judgment: 'Always keep decisions traceable.', ontologyFormation: { blockedReasons: [], requiresTReview: true } });
     expect(mocks.saveCandidate.mock.calls[0][1].ontologyFormation.refs.some(ref => ref.sharedBody)).toBe(false);
+    expect(mocks.saveCandidate.mock.calls[0][1].ontologyFormation.previewChanges).toContainEqual(expect.objectContaining({
+      after: expect.objectContaining({ id: 'traceability-rule', strength: 'required' }),
+    }));
+    expect(mocks.runModel).toHaveBeenCalledTimes(3);
+    expect(mocks.buildRunner.mock.calls.at(-1)![0].sessionId).toMatch(/^memory-formation-recall-/);
   });
   it('keeps invalid/fabricated value decisions internal and does not invoke extraction', async () => {
     const capture = await api(); await capture.runNightlyCaptureSweep(USER, WINDOW, capture.settings);
