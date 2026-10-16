@@ -200,6 +200,11 @@ installSdkTimeoutPatch();
 import { installSseHeaderTimeoutPatch } from './model/core-agent/sse-header-timeout-patch';
 installSseHeaderTimeoutPatch();
 
+// Install the stable fetch router before diagnostics/provider imports capture
+// fetch. Electron's system-proxy route becomes available after app-ready.
+import { installEnvProxyDispatcher, installSystemProxyDispatcher } from './util/proxy-dispatcher';
+void installEnvProxyDispatcher();
+
 // Provider-fetch diagnostics: dump the real undici cause chain for model
 // endpoint failures.
 import { installFetchDiag } from './model/core-agent/fetch-diag';
@@ -1614,6 +1619,7 @@ if (!gotLock) {
     showMainWindow();
   });
   void app.whenReady().then(async () => {
+    await installSystemProxyDispatcher();
     await runBootSelfCheck();
 
     // 版本迁移：检测版本变化，自动清理旧数据
