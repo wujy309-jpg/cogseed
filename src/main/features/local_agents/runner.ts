@@ -152,6 +152,13 @@ const BACKENDS: Partial<Record<LocalCliType, LocalBackend>> = {
   workbuddy: workbuddyBackend,
 };
 
+/** CLIs that can be held to a `read-only` session on their own: codex gets a
+ *  scoped `readOnly` sandbox, claude gets a read/search tool surface plus
+ *  denied tool permissions. Anything else would have to drop its bypass flags,
+ *  which makes it block on an unanswerable permission prompt (see
+ *  `resolveCliSandboxPosture` in `backends/base.ts`). */
+const READ_ONLY_CAPABLE_CLIS: ReadonlySet<LocalCliType> = new Set<LocalCliType>(['codex', 'claude']);
+
 function executionKindForCli(cli: LocalCliType): ExecutionKind {
   if (cli === 'codex') return 'codex';
   if (cli === 'openclaw') return 'openclaw';
@@ -913,6 +920,20 @@ export async function run(opts: RunCliAgentOpts): Promise<RunCliAgentResult> {
     } });
     if (!decision.allowed) throw new Error('E_ONTOLOGY_OPERATION_PRECONDITION: required conditions have no verified adapter for this CLI execution');
     if (opts.signal.aborted) throw new Error('local action cancelled');
+    // A `read-only` run (review / scan / import) must not let the child CLI
+    // change the workspace. Only codex (scoped `readOnly` sandbox) and claude
+    // (read-only tool surface + denied tool permissions) can be held to that;
+    // for every other CLI the only way to keep the flag would be to remove its
+    // bypass flags, which makes it block on an unanswerable permission prompt
+    // and hang the run. Refuse here — the single dispatch path — rather than
+    // silently granting write access in a read-only session.
+    const readOnlyRun = opts.preparedContext?.permissionMode === 'read-only';
+    if (readOnlyRun && !READ_ONLY_CAPABLE_CLIS.has(opts.cli)) {
+      throw new Error(
+        `E_LOCAL_AGENT_READ_ONLY_UNSUPPORTED: ${opts.cli} cannot be held to a read-only session yet `
+        + '(no sandbox or tool-surface scoping); run this task with a CLI that supports it or switch the session out of read-only',
+      );
+    }
     await backend.run({
       binPath: entry.path,
       prompt: opts.prompt,

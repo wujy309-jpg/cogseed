@@ -26,11 +26,17 @@ import {
   LineSplitter,
   levelOrInfo,
   FileChangeFallbackTracker,
+  resolveCliSandboxPosture,
 } from './base.js';
 import { wrapPersistentBackend, registerPersistentAdapter } from '../persistent/index.js';
 import { createClaudeAdapter } from './claude_persistent.js';
 
 const log = createLogger('local-agents:claude');
+
+/** Tool surface for a `read-only` run. The documented `--tools` selector takes
+ *  `""` (none), `"default"` (all) or a comma list, so this stays a name list.
+ *  Deliberately read/search only: no Edit / Write / Bash / NotebookEdit. */
+export const CLAUDE_READ_ONLY_TOOLS = 'Read,Grep,Glob';
 
 // Persistent wiring: stream-json duplex adapter (one resident process
 // per conversation window; see claude_persistent.ts). The one-shot
@@ -126,12 +132,18 @@ const claudeOneShotBackend: LocalBackend = {
     }) + '\n';
     child.stdin.write(inputLine);
 
-    /** Auto-allow control_request — claude code asks for tool-use /
-     *  hook permission through this channel. We're a daemon-style
-     *  dispatcher (no interactive UI yet for approval), so the only
-     *  sane response is to allow and surface a permission-request
-     *  event to the rail for visibility. Schema mirrors multica's
-     *  daemon (`server/pkg/agent/claude.go::handleControlRequest`). */
+    // `read-only` runs (review / scan / import) must not mutate the workspace,
+    // so their tool permission requests are denied below; every other mode
+    // auto-allows because an approval-bearing mode has no channel back to the
+    // chat UI yet (see `resolveCliSandboxPosture`).
+    const runReadOnly = resolveCliSandboxPosture(opts.executionContext?.permissionMode) === 'read-only';
+
+    /** Answer claude code's tool-use / hook permission request. This channel is
+     *  the only permission hook a spawned claude gives us (schema mirrors
+     *  multica's daemon: `server/pkg/agent/claude.go::handleControlRequest`).
+     *  Daemon-style dispatch auto-allows and surfaces a `permission-request`
+     *  event to the rail for visibility; a read-only run denies instead, since
+     *  otherwise a read-only session could still write through the child. */
     const respondToControlRequest = (msg: any): void => {
       const req = msg?.request || {};
       const inputMap = (req.input && typeof req.input === 'object') ? req.input : {};
@@ -140,10 +152,16 @@ const claudeOneShotBackend: LocalBackend = {
         response: {
           subtype: 'success',
           request_id: msg.request_id,
-          response: {
-            behavior: 'allow',
-            updatedInput: inputMap,
-          },
+          response: runReadOnly
+            ? {
+                behavior: 'deny',
+                message:
+                  'This CogSeed session is read-only: tool use that could change the workspace is not permitted.',
+              }
+            : {
+                behavior: 'allow',
+                updatedInput: inputMap,
+              },
         },
       };
       try {
@@ -190,8 +208,8 @@ const claudeOneShotBackend: LocalBackend = {
             id: String(obj.request_id || ''),
             tool: String(obj?.request?.tool_name || ''),
             input: obj?.request?.input ?? {},
-            autoDecided: 'allow',
-            reason: 'bypass',
+            autoDecided: runReadOnly ? 'deny' : 'allow',
+            reason: runReadOnly ? 'read-only' : 'bypass',
           });
           return;
         }
@@ -280,23 +298,42 @@ const claudeOneShotBackend: LocalBackend = {
 
 /** Args mirroring the multica skeleton, distilled to what we actually
  *  use in v1: stream-json in/out, `--print` (non-interactive),
- *  bypass permissions for daemon-style execution, optional model. */
-export function buildClaudeArgs(opts: Pick<BackendRunOptions, 'model' | 'resumeSessionId' | 'customArgs' | 'bridge'>): string[] {
+ *  bypass permissions for daemon-style execution, optional model.
+ *
+ *  Permission posture: a `read-only` run must not be able to mutate the
+ *  workspace, so it drops both bypass flags and narrows the tool surface to
+ *  read/search tools. Every other mode keeps the bypass flags — an
+ *  approval-bearing mode has no channel back to the chat UI, so removing them
+ *  would leave claude blocked on an unanswerable prompt (see
+ *  `resolveCliSandboxPosture` in `base.ts`). */
+export function buildClaudeArgs(
+  opts: Pick<
+    BackendRunOptions,
+    'model' | 'resumeSessionId' | 'customArgs' | 'bridge' | 'executionContext'
+  >,
+): string[] {
   // `--include-partial-messages` is the flag that turns claude code's
   // stream-json output from "one assistant message per completed turn"
   // into "many partial chunks streamed as the model generates". Without
   // it the user sees nothing for tens of seconds and then everything
   // appears at once — same UX as a non-streaming request. Older claude
   // versions silently ignore the flag rather than erroring on it.
+  const readOnly = resolveCliSandboxPosture(opts.executionContext?.permissionMode) === 'read-only';
   const args = [
     '-p',
     '--output-format', 'stream-json',
     '--input-format', 'stream-json',
     '--include-partial-messages',
     '--verbose',
-    '--permission-mode', 'bypassPermissions',
-    '--dangerously-skip-permissions',
   ];
+  if (readOnly) {
+    // `--tools` is the documented tool-surface switch (`""` = none,
+    // `"default"` = all). Belt and braces with the deny in
+    // `respondToControlRequest`: this one the CLI enforces itself.
+    args.push('--tools', CLAUDE_READ_ONLY_TOOLS);
+  } else {
+    args.push('--permission-mode', 'bypassPermissions', '--dangerously-skip-permissions');
+  }
   if (opts.model) args.push('--model', opts.model);
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
   // cogseed-bridge: ADD the per-run MCP server alongside the user's own MCP

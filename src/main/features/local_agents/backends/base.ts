@@ -159,6 +159,39 @@ export class StderrTail {
   }
 }
 
+/** Sandbox posture a backend must apply for a host-validated run.
+ *
+ *  The permission-mode vocabulary belongs to the host (`LocalExecMode` plus the
+ *  internal `read-only` markers), so a backend must never interpret the raw
+ *  string on its own. Two rules keep this honest:
+ *
+ *  1. **Only `read-only` narrows.** Review / scan / import runs set it because
+ *     the workspace must not change, and it is the one mode a spawned CLI can be
+ *     held to without an approval channel.
+ *  2. **Approval-bearing modes keep the granted scope, but must disclose.**
+ *     `workspace_approval` / `all_files_approval` / `ask` mean "ask me first",
+ *     yet a spawned CLI has no channel back to the chat UI: dropping its bypass
+ *     flags makes it block on an unanswerable prompt and the run hangs (see
+ *     `HERMES_YOLO_MODE` in `hermes.ts` and the `permission-request` rail event
+ *     in `claude.ts`). Until that bridge exists, `postureIsApprovalFallback()`
+ *     tells callers to surface the grant instead of leaving it silent. */
+export type CliSandboxPosture = 'read-only' | 'full-access';
+
+export function resolveCliSandboxPosture(
+  permissionMode: string | undefined | null,
+): CliSandboxPosture {
+  return String(permissionMode ?? '').trim() === 'read-only' ? 'read-only' : 'full-access';
+}
+
+/** True when full access is an artifact of the missing approval bridge rather
+ *  than something the user granted (`all_files_auto` / `full`). */
+export function postureIsApprovalFallback(
+  permissionMode: string | undefined | null,
+): boolean {
+  const mode = String(permissionMode ?? '').trim();
+  return mode === 'workspace_approval' || mode === 'all_files_approval' || mode === 'ask';
+}
+
 export function executionContextEnv(context: BackendRunOptions['executionContext']): Record<string, string> | undefined {
   if (!context) return undefined;
   return {
