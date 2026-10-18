@@ -1,4 +1,5 @@
 import { requireContentCategory } from '../features/recall/content-category';
+import { outboxRequeueIsolated } from '../features/p3394_bridge/outbound-outbox';
 /**
  * IPC wiring — replaces `bridge/routes.py` for the Electron era.
  *
@@ -2331,6 +2332,12 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       await groupChat.reconcileRun(ctx.userId, cid, request.dispatch_payload.run_id);
     }
     return result;
+  },
+
+  // 运维：把被隔离的 outbox 记录放回重放集（隔离可逆，不必手改 JSONL）。
+  'p3394.requeueIsolatedOutbox': async ({ messageId }, _ctx) => {
+    if (typeof messageId !== 'string' || !messageId) throw new Error('invalid messageId');
+    return { requeued: outboxRequeueIsolated(messageId) };
   },
 
   'p3394.listProtocolEvents': async ({ cid }, ctx) => {

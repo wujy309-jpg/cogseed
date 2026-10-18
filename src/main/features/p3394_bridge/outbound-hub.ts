@@ -13,7 +13,7 @@ import { P3394A2AChannel } from './a2a-channel';
 import { P3394ModelRuntimeAdapter } from './model-runtime-adapter';
 import type { P3394ChannelAdapter } from './channel-adapter';
 import { P3394OutboundClient } from './outbound';
-import { outboxListForReplay, outboxMarkCompleted, outboxMarkFailed, outboxMarkSent, outboxRecordSubmitted } from './outbound-outbox';
+import { outboxListForReplay, outboxMarkCompleted, outboxMarkFailed, outboxMarkIsolated, outboxMarkSent, outboxRecordReplayFailure, outboxRecordSubmitted, outboxReplayDecision } from './outbound-outbox';
 import type { P3394Envelope } from './envelope';
 import type { P3394PeerRecord } from './registry';
 
@@ -209,9 +209,11 @@ export class P3394OutboundHub {
   /** 桥启动重放：把 outbox 里 submitted/sent 的信封重发给对应 peer
    *  （at-least-once；对端按 idempotency_key 幂等）。不等待回复——
    *  回复到达时若没有 waiter，会照常进入会话流程。 */
-  async replayOutbox(): Promise<{ replayed: number; failed: number }> {
+  async replayOutbox(options: { isolateAfterAttempts?: number } = {}): Promise<{ replayed: number; failed: number; isolated: number }> {
+    const isolateAfterAttempts = options.isolateAfterAttempts ?? 3;
     let replayed = 0;
     let failed = 0;
+    let isolated = 0;
     for (const record of outboxListForReplay()) {
       try {
         const peer = this.listPeers().find((candidate) => candidate.identity.agent_id === record.peer && !candidate.disabled);
@@ -223,14 +225,24 @@ export class P3394OutboundHub {
         replayed += 1;
         log.info('P3394 outbox replayed', { peer: record.peer, message_id: record.message_id });
       } catch (error) {
-        // Replay is a recovery attempt, not a terminal delivery decision. Keep
-        // submitted/sent in the replay set so a temporarily unavailable peer
-        // can be retried on the next bridge recovery cycle.
-        failed += 1;
-        log.warn('P3394 outbox replay deferred', { peer: record.peer, message_id: record.message_id, error: error instanceof Error ? error.message : String(error) });
+        const message = error instanceof Error ? error.message : String(error);
+        // Replay is a recovery attempt, not a terminal delivery decision: a
+        // temporarily unavailable peer stays in the replay set. Configuration-
+        // level unreachability (peer gone / no endpoint) never succeeds by
+        // retrying, so after the configured attempts it is isolated — kept on
+        // disk and out of the replay set — instead of retried on every boot.
+        const attempts = outboxRecordReplayFailure(record.message_id, message);
+        if (outboxReplayDecision(message, attempts, isolateAfterAttempts) === 'isolate') {
+          outboxMarkIsolated(record.message_id, message);
+          isolated += 1;
+          log.warn('P3394 outbox record isolated', { peer: record.peer, message_id: record.message_id, attempts, error: message });
+        } else {
+          failed += 1;
+          log.warn('P3394 outbox replay deferred', { peer: record.peer, message_id: record.message_id, attempts, error: message });
+        }
       }
     }
-    return { replayed, failed };
+    return { replayed, failed, isolated };
   }
 
   /** Whether a reply waiter is currently registered for this outbound session.
