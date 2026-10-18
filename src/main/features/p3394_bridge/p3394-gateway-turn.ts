@@ -9,6 +9,7 @@
  */
 
 import { detectOne } from '../local_agents/registry.js';
+import { gatewayDispatchBlock } from './gateway-dispatch-gate.js';
 import { getP3394OutboundHub } from './app-wiring';
 import { buildP3394OutboundEnvelope } from '../cogseed_backend/p3394-host-adapter';
 import type { P3394OutboundReference } from '../cogseed_backend/p3394-host-adapter';
@@ -111,6 +112,10 @@ export async function runP3394GatewayTurn(input: P3394GatewayTurnInput): Promise
   if (!nodeId) {
     return { text: '', error: 'p3394_unsupported_cli: ' + input.cli, failureKind: 'runtime', failureCode: 'p3394_unsupported_cli' };
   }
+  // The gateway spawns the CLI itself, so the runner's dispatch gate never runs
+  // on this path — a retired/disabled agent would otherwise stay reachable.
+  const blocked = await gatewayDispatchBlock(input.uid, input.agent?.agent_id || nodeId);
+  if (blocked) return { text: '', ...blocked };
   const hub = getP3394OutboundHub();
   if (!hub) {
     return { text: '', error: 'p3394_bridge_unavailable', failureKind: 'runtime', failureCode: 'p3394_bridge_unavailable' };
