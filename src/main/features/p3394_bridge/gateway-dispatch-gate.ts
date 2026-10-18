@@ -38,7 +38,15 @@ export async function gatewayDispatchBlock(
 ): Promise<GatewayDispatchBlock | null> {
   const id = String(agentId ?? '').trim();
   if (!uid || !id) return null;
-  const policy = await getAgentDispatchPolicy(uid, id);
+  let policy: Awaited<ReturnType<typeof getAgentDispatchPolicy>>;
+  try {
+    policy = await getAgentDispatchPolicy(uid, id);
+  } catch {
+    // A policy read must never turn a dispatch into an exception: this path used
+    // to be throw-free, and failing open keeps today's behavior (the gateway and
+    // the remote peer still enforce their own checks).
+    return null;
+  }
   if (!policy || isAgentChatDispatchable(policy)) return null;
   const failureCode = policy.interaction_mode === 'management_only'
     ? MANAGEMENT_ONLY_AGENT_ERROR_CODE

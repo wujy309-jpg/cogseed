@@ -1,5 +1,4 @@
 import { requireContentCategory } from '../features/recall/content-category';
-import { outboxRequeueIsolated } from '../features/p3394_bridge/outbound-outbox';
 /**
  * IPC wiring — replaces `bridge/routes.py` for the Electron era.
  *
@@ -15,6 +14,8 @@ import { outboxRequeueIsolated } from '../features/p3394_bridge/outbound-outbox'
  * Handler tables below are the full router — add a new logical channel by
  * dropping it into `invokeHandlers` or `streamHandlers`.
  */
+import { outboxRequeueIsolated } from '../features/p3394_bridge/outbound-outbox';
+
 
 import { app, ipcMain, dialog, BrowserWindow, screen, type WebContents } from 'electron';
 

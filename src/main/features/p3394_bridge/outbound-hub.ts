@@ -227,12 +227,10 @@ export class P3394OutboundHub {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         // Replay is a recovery attempt, not a terminal delivery decision: a
-        // temporarily unavailable peer stays in the replay set. Configuration-
-        // level unreachability (peer gone / no endpoint) never succeeds by
-        // retrying, so after the configured attempts it is isolated — kept on
-        // disk and out of the replay set — instead of retried on every boot.
-        // Only configuration-level failures count toward isolation: a transient
-        // outage must never consume the record's budget.
+        // transiently unavailable peer stays in the replay set and never
+        // consumes the record's budget. Configuration-level unreachability
+        // (peer gone / no endpoint) never succeeds by retrying, so after the
+        // configured attempts it is isolated — kept on disk, out of replay.
         const configLevel = message === 'p3394_peer_not_registered' || message === 'p3394_peer_has_no_endpoint';
         const attempts = configLevel ? outboxRecordReplayFailure(record.message_id, message) : 0;
         if (outboxReplayDecision(message, attempts, isolateAfterAttempts) === 'isolate') {

@@ -114,7 +114,7 @@ export async function runP3394GatewayTurn(input: P3394GatewayTurnInput): Promise
   }
   // The gateway spawns the CLI itself, so the runner's dispatch gate never runs
   // on this path — a retired/disabled agent would otherwise stay reachable.
-  const blocked = await gatewayDispatchBlock(input.uid, input.agent?.agent_id || nodeId);
+  const blocked = await gatewayDispatchBlock(input.uid, input.agent.agent_id || nodeId);
   if (blocked) return { text: '', ...blocked };
   const hub = getP3394OutboundHub();
   if (!hub) {

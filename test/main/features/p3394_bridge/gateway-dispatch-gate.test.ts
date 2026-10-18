@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const policyRead = vi.hoisted(() => ({ value: null as unknown }));
 vi.mock('../../../../src/main/features/agent-dispatch-policy', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../src/main/features/agent-dispatch-policy')>();
-  return { ...actual, getAgentDispatchPolicy: vi.fn(async () => policyRead.value) };
+  return { ...actual, getAgentDispatchPolicy: vi.fn(async () => { if (policyRead.value instanceof Error) throw policyRead.value; return policyRead.value; }) };
 });
 
 const { gatewayDispatchBlock } = await import('../../../../src/main/features/p3394_bridge/gateway-dispatch-gate');
@@ -36,6 +36,11 @@ describe('p3394_bridge › gateway dispatch gate', () => {
     expect(await gatewayDispatchBlock(UID, 'some-external-node')).toBeNull();
     policyRead.value = { enabled: true };
     expect(await gatewayDispatchBlock(UID, 'known-agent')).toBeNull();
+  });
+
+  it('fails open when the policy read throws (dispatch must not become an exception)', async () => {
+    policyRead.value = new Error('disk unavailable');
+    expect(await gatewayDispatchBlock(UID, 'any-agent')).toBeNull();
   });
 
   it('never blocks without a usable identity', async () => {
