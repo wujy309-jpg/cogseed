@@ -231,7 +231,10 @@ export class P3394OutboundHub {
         // level unreachability (peer gone / no endpoint) never succeeds by
         // retrying, so after the configured attempts it is isolated — kept on
         // disk and out of the replay set — instead of retried on every boot.
-        const attempts = outboxRecordReplayFailure(record.message_id, message);
+        // Only configuration-level failures count toward isolation: a transient
+        // outage must never consume the record's budget.
+        const configLevel = message === 'p3394_peer_not_registered' || message === 'p3394_peer_has_no_endpoint';
+        const attempts = configLevel ? outboxRecordReplayFailure(record.message_id, message) : 0;
         if (outboxReplayDecision(message, attempts, isolateAfterAttempts) === 'isolate') {
           outboxMarkIsolated(record.message_id, message);
           isolated += 1;
