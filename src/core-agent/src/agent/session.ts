@@ -29,6 +29,10 @@ export const ACTIVE_CHECKPOINT_EXACT_FACTS_HEADING =
 // resident. Only results larger than the marker are worth pruning.
 import { pruneToolResultContent } from "./context-compaction-policy.js";
 
+import { createLogger } from "../shared/logger.js";
+
+const log = createLogger("agent-session");
+
 export const ARCHIVED_TOOL_RESULT_MARKER =
   "[archived: folded into the current-turn checkpoint summary; re-read the source if exact bytes are needed]";
 export const ARCHIVED_TOOL_RESULT_PRUNE_MIN_CHARS = 400;
@@ -939,6 +943,14 @@ export class Session {
     if (lastApplied !== null) {
       const modelViewTokensNow = this.esticogseedModelTokens();
       if (modelViewTokensNow - lastApplied < Math.max(1, Math.trunc(lastApplied * 0.25))) {
+        // Observable on purpose: a silent decline is indistinguishable from "the
+        // context never grew", which made the first real-machine check inconclusive.
+        log.info("context compaction skipped", {
+          phase: "active_checkpoint",
+          reason: "no_new_volume",
+          modelViewTokensNow,
+          lastApplied,
+        });
         return null;
       }
     }
