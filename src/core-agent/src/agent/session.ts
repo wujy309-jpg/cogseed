@@ -30,6 +30,7 @@ export const ACTIVE_CHECKPOINT_EXACT_FACTS_HEADING =
 import { pruneToolResultContent } from "./context-compaction-policy.js";
 
 import { createLogger } from "../shared/logger.js";
+import { noNewVolumeSince } from "./context-compaction-policy.js";
 
 const log = createLogger("agent-session");
 
@@ -942,7 +943,7 @@ export class Session {
     const lastApplied = this.lastActiveCheckpointModelViewTokensAfter;
     if (lastApplied !== null) {
       const modelViewTokensNow = this.esticogseedModelTokens();
-      if (modelViewTokensNow - lastApplied < Math.max(1, Math.trunc(lastApplied * 0.25))) {
+      if (noNewVolumeSince(modelViewTokensNow, lastApplied)) {
         // Observable on purpose: a silent decline is indistinguishable from "the
         // context never grew", which made the first real-machine check inconclusive.
         log.info("context compaction skipped", {

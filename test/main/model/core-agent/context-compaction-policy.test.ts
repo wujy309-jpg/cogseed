@@ -3,6 +3,8 @@ import {
   DEFAULT_TOOL_RESULT_PRUNE,
   TOOL_RESULT_PRUNE_MARKER,
   assertRetainRatioBelowTrigger,
+  MIN_NEW_VOLUME_RATIO,
+  noNewVolumeSince,
   pruneToolResultContent,
   resolveToolResultPruneConfig,
   shouldReCompact,
@@ -56,5 +58,30 @@ describe('core-agent › context compaction policy', () => {
     expect(shouldReCompact({ ...base, tokensBefore: 26_000 })).toBe(true);
     // first compaction of a run is always allowed when over the trigger
     expect(shouldReCompact({ ...base, lastCompaction: null, tokensBefore: 26_000 })).toBe(true);
+  });
+});
+
+/** The session-side gate's exact rule: it must decline re-compaction of the same
+ *  history until the model view grows enough, and must never decline the first
+ *  compaction of a run. */
+describe('core-agent › noNewVolumeSince (checkpoint gate)', () => {
+  it('allows the first compaction of a run and any unmeasured state', () => {
+    expect(noNewVolumeSince(30_000, null)).toBe(false);
+    expect(noNewVolumeSince(Number.NaN, 10_000)).toBe(false);
+    expect(noNewVolumeSince(30_000, Number.POSITIVE_INFINITY)).toBe(false);
+  });
+
+  it('declines below the 25% floor and allows at or above it', () => {
+    const last = 10_000;
+    expect(noNewVolumeSince(last + 2_499, last)).toBe(true);   // +24.99% → decline
+    expect(noNewVolumeSince(last + 2_500, last)).toBe(false);  // +25% exactly → allow
+    expect(noNewVolumeSince(last + 9_000, last)).toBe(false);
+    expect(MIN_NEW_VOLUME_RATIO).toBe(0.25);
+  });
+
+  it('honors a custom ratio and a zero/negative last level', () => {
+    expect(noNewVolumeSince(1_500, 1_000, 0.6)).toBe(true);
+    expect(noNewVolumeSince(1_600, 1_000, 0.6)).toBe(false);
+    expect(noNewVolumeSince(0, 0)).toBe(true);   // any zero growth is still "no new volume"
   });
 });

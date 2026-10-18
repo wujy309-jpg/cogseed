@@ -110,6 +110,22 @@ export function assertRetainRatioBelowTrigger(retainRatio: number, triggerRatio:
   }
 }
 
+/** Default new-volume requirement before the same history may be compacted again. */
+export const MIN_NEW_VOLUME_RATIO = 0.25;
+
+/** True when the model view has NOT grown enough since the last compaction to
+ *  justify compacting the same history again. `lastApplied === null` means the
+ *  run has not compacted yet, so nothing is declined (first compaction always
+ *  allowed). Non-finite inputs are treated as "no evidence" and also allowed. */
+export function noNewVolumeSince(
+  tokensNow: number,
+  lastApplied: number | null,
+  minRatio: number = MIN_NEW_VOLUME_RATIO,
+): boolean {
+  if (lastApplied === null || !Number.isFinite(lastApplied) || !Number.isFinite(tokensNow)) return false;
+  return tokensNow - lastApplied < Math.max(1, Math.trunc(lastApplied * minRatio));
+}
+
 export interface LastCompactionFact {
   /** Input tokens measured right after the last compaction finished. */
   tokensAfter: number;
