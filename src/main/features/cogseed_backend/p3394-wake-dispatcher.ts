@@ -99,13 +99,17 @@ export const cogseedWakeDispatcher: WakeDispatcher = {
               viaP3394Gateway: true,
             }
           : undefined;
-      const workingDir = localCli
-        ? await (await import('./local-cli-execution-adapter')).resolveCogSeedLocalCliWorkingDir({
-            userId,
-            conversationId: request.conversation_id,
-            agentId: request.agent_id,
-          })
-        : undefined;
+      // Resolve the working directory for BOTH paths: local CLI passes it as
+      // `workingDir`, while the native runtime only gets tool roots from a `file`
+      // context item (normalizeContext pushes roots for file items only). Without
+      // this a native wake run had no roots and every tool call failed with
+      // E_RUNTIME_NO_ROOTS.
+      const resolvedWorkingDir = await (await import('./local-cli-execution-adapter')).resolveCogSeedLocalCliWorkingDir({
+        userId,
+        conversationId: request.conversation_id,
+        agentId: request.agent_id,
+      }).catch(() => undefined);
+      const workingDir = localCli ? resolvedWorkingDir : undefined;
       // 网关预热：外接智能体（p3394-gateway）在任务真正 sendAndWait 之前就
       // 提前拉起托管 gateway 并开始注册（prewarmExternalGateway 幂等，已运行
       // 则复用）。这会把「spawn + hello 注册等待」前移到用户批准唤醒的时刻，
@@ -140,7 +144,13 @@ export const cogseedWakeDispatcher: WakeDispatcher = {
           ? { abilityAssetIds: request.dispatch_payload.asset_ids }
           : {}),
         ...(workingDir ? { workingDir } : {}),
-        context: buildCogSeedAgentRuntimeContext(executionContext),
+        context: [
+          ...buildCogSeedAgentRuntimeContext(executionContext),
+          // File-typed item so normalizeContext derives a tool root for native runs.
+          ...(!localCli && resolvedWorkingDir
+            ? [{ type: 'file' as const, path: resolvedWorkingDir, label: 'working directory' }]
+            : []),
+        ],
         ...(request.dispatch_payload.attachments?.length ? { attachments: request.dispatch_payload.attachments } : {}),
       });
       if (task.status === 'failed' || task.status === 'cancelled') {
