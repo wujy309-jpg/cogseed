@@ -35,9 +35,14 @@ export interface ToolResultPruneConfig {
 }
 
 export const DEFAULT_TOOL_RESULT_PRUNE: Readonly<ToolResultPruneConfig> = Object.freeze({
-  thresholdChars: 8_192,
-  headChars: 4_096,
-  tailChars: 1_024,
+  // Real-run calibration (2026-10-18, active_checkpoint path): four compactions in
+  // three minutes with a shrinking saving (15.6K → 11.4K → 10.3K tokens) showed the
+  // retained tail dominating the window, so the 8K character threshold left too
+  // many oversized results in place. Halved: results over 4K characters keep 2K
+  // head + marker + 512 tail.
+  thresholdChars: 4_096,
+  headChars: 2_048,
+  tailChars: 512,
 });
 
 export const TOOL_RESULT_PRUNE_MARKER = '\n…[middle omitted to save context; re-read the source if exact bytes are needed]…\n';
