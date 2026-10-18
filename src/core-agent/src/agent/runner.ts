@@ -88,8 +88,6 @@ const REQUEST_INPUT_SAFETY_TOKENS = 2_048;
 import {
   CONTEXT_RETAIN_TAIL_RATIO,
   assertRetainRatioBelowTrigger,
-  shouldReCompact,
-  type LastCompactionFact,
 } from "./context-compaction-policy.js";
 
 const CONTEXT_COMPACTION_TRIGGER_RATIO = 0.82;
@@ -911,9 +909,6 @@ export class AgentRunner {
       retryWaitMs: 0,
     };
     let activeProviderStartedAt: number | undefined;
-    // B: what the last compaction left behind, so the same history is not compacted
-    // again just because a couple of operations pushed it back over the trigger.
-    let lastCompaction: LastCompactionFact | null = null;
     const compactionControl: CompactionControl = {
       attemptedFingerprints: new Set<string>(),
       attempts: 0,
@@ -1751,15 +1746,7 @@ export class AgentRunner {
         // host fills the catalog for every candidate (PC buildRunner). Fall back
         // to the primary's window, then the 200K default for an unknown model.
         const tokensBefore = esticogseedRequestInputTokens(this.session, systemPrompt, toolDefs, params.turnEphemeral);
-        // B: over the trigger is necessary, not sufficient — a later tool round AND
-        // genuinely new volume are required on top of the fingerprint dedup.
-        if (shouldReCompact({
-          tokensBefore,
-          usableInputTokens,
-          triggerRatio: CONTEXT_COMPACTION_TRIGGER_RATIO,
-          currentTurnIndex: toolLoops,
-          lastCompaction,
-        })) {
+        if (tokensBefore > usableInputTokens * CONTEXT_COMPACTION_TRIGGER_RATIO) {
           // Compaction keeps the recent tail verbatim and replaces only the
           // OLDER messages with a short summary. If the kept tail alone already
           // dominates the window — e.g. a large cap-exempt read_file / kb_read
@@ -1811,7 +1798,6 @@ export class AgentRunner {
             });
             compactionControl.epochs++;
             compactionCount++;
-            lastCompaction = { tokensAfter, turnIndex: toolLoops };
             yield {
               type: "compaction",
               tokensBefore,

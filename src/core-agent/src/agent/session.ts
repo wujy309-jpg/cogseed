@@ -887,6 +887,12 @@ export class Session {
     return total;
   }
 
+  /** B (checkpoint path): model-view tokens left behind by the last applied checkpoint.
+   *  The same history must not be checkpoint-compacted again without genuinely new
+   *  volume — a real run compacted four times in three minutes with shrinking savings
+   *  because the retained tail kept dominating the window. */
+  private lastActiveCheckpointModelViewTokensAfter: number | null = null;
+
   getPendingActiveCheckpoint(): ActiveCheckpointCandidate | null {
     const state = this.turnState;
     const active = state?.activeTurn;
@@ -925,6 +931,18 @@ export class Session {
       return null;
     }
 
+    // B (checkpoint path): require genuinely new volume over what the last applied
+    // checkpoint left behind (default +25%). Declining here is a supported outcome —
+    // the runner's `if (activeCandidate && ...)` simply skips — so the gate lives with
+    // the session state instead of the runner's control flow.
+    const lastApplied = this.lastActiveCheckpointModelViewTokensAfter;
+    if (lastApplied !== null) {
+      const modelViewTokensNow = this.esticogseedModelTokens();
+      if (modelViewTokensNow - lastApplied < Math.max(1, Math.trunc(lastApplied * 0.25))) {
+        return null;
+      }
+    }
+
     return {
       groups: archiveGroups,
       messages: this.buildActiveCheckpointMessages(archiveGroups),
@@ -947,6 +965,7 @@ export class Session {
     // session re-cross the trigger after a couple of operations. Bound each kept
     // result to head+tail (type/toolUseId/isError and indices untouched).
     this.pruneRetainedTailToolResults(active.checkpointThroughMessageIndex);
+    this.lastActiveCheckpointModelViewTokensAfter = this.esticogseedModelTokens();
     return mergedSummary;
   }
 
