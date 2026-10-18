@@ -27,6 +27,8 @@ export const ACTIVE_CHECKPOINT_EXACT_FACTS_HEADING =
 // the turn. We rewrite the payload to this marker (keeping the block's
 // type/toolUseId/isError) so a heavy-fetch turn does not hold every fetched page
 // resident. Only results larger than the marker are worth pruning.
+import { pruneToolResultContent } from "./context-compaction-policy.js";
+
 export const ARCHIVED_TOOL_RESULT_MARKER =
   "[archived: folded into the current-turn checkpoint summary; re-read the source if exact bytes are needed]";
 export const ARCHIVED_TOOL_RESULT_PRUNE_MIN_CHARS = 400;
@@ -940,6 +942,11 @@ export class Session {
     active.checkpointSummary = mergedSummary;
     active.checkpointThroughMessageIndex = Math.max(prevThrough, checkpointThroughMessageIndex);
     this.pruneArchivedActiveProcess(prevThrough, active.checkpointThroughMessageIndex);
+    // A′: the tail that survives the checkpoint still occupies the window — and a
+    // single 16K-token tool result can be over half of it, which is what made the
+    // session re-cross the trigger after a couple of operations. Bound each kept
+    // result to head+tail (type/toolUseId/isError and indices untouched).
+    this.pruneRetainedTailToolResults(active.checkpointThroughMessageIndex);
     return mergedSummary;
   }
 
@@ -1003,6 +1010,28 @@ export class Session {
           return { ...c, content: ARCHIVED_TOOL_RESULT_MARKER };
         }
         return c;
+      });
+      if (changed) this.messages[i] = { ...msg, content };
+    }
+  }
+
+  /**
+   * A′: shrink oversized tool results in the part of the history that survives the
+   * checkpoint (indices > throughInclusive). Only `content` changes — block type,
+   * toolUseId, isError, message role and every index stay valid, exactly like
+   * `pruneArchivedActiveProcess`. Results at or below the threshold stay verbatim.
+   */
+  private pruneRetainedTailToolResults(throughInclusive: number): void {
+    const start = Math.max(0, throughInclusive + 1);
+    for (let i = start; i < this.messages.length; i++) {
+      const msg = this.messages[i];
+      let changed = false;
+      const content = msg.content.map((c) => {
+        if (c.type !== "tool_result" || typeof c.content !== "string") return c;
+        const pruned = pruneToolResultContent(c.content);
+        if (!pruned.pruned) return c;
+        changed = true;
+        return { ...c, content: pruned.text };
       });
       if (changed) this.messages[i] = { ...msg, content };
     }

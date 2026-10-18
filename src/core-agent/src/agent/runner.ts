@@ -85,7 +85,17 @@ export const SPIN_CONVERGENCE_TOOL_LOOP_RATIO = 0.75;
 export const MAX_INLINE_TOOL_RESULT_TOKENS_PER_ROUND = 16_000;
 export const TOOL_RESULT_MARKER_RESERVE_TOKENS = 1_000;
 const REQUEST_INPUT_SAFETY_TOKENS = 2_048;
+import {
+  CONTEXT_RETAIN_TAIL_RATIO,
+  assertRetainRatioBelowTrigger,
+  shouldReCompact,
+  type LastCompactionFact,
+} from "./context-compaction-policy.js";
+
 const CONTEXT_COMPACTION_TRIGGER_RATIO = 0.82;
+// C: the retained tail must stay below the trigger, or retention itself keeps the
+// session over the line. Checked at load so a bad pair is a startup error.
+assertRetainRatioBelowTrigger(CONTEXT_RETAIN_TAIL_RATIO, CONTEXT_COMPACTION_TRIGGER_RATIO);
 
 /**
  * Context summarization is an auxiliary data-transformation call, not another
@@ -901,6 +911,9 @@ export class AgentRunner {
       retryWaitMs: 0,
     };
     let activeProviderStartedAt: number | undefined;
+    // B: what the last compaction left behind, so the same history is not compacted
+    // again just because a couple of operations pushed it back over the trigger.
+    let lastCompaction: LastCompactionFact | null = null;
     const compactionControl: CompactionControl = {
       attemptedFingerprints: new Set<string>(),
       attempts: 0,
@@ -1738,7 +1751,15 @@ export class AgentRunner {
         // host fills the catalog for every candidate (PC buildRunner). Fall back
         // to the primary's window, then the 200K default for an unknown model.
         const tokensBefore = esticogseedRequestInputTokens(this.session, systemPrompt, toolDefs, params.turnEphemeral);
-        if (tokensBefore > usableInputTokens * CONTEXT_COMPACTION_TRIGGER_RATIO) {
+        // B: over the trigger is necessary, not sufficient — a later tool round AND
+        // genuinely new volume are required on top of the fingerprint dedup.
+        if (shouldReCompact({
+          tokensBefore,
+          usableInputTokens,
+          triggerRatio: CONTEXT_COMPACTION_TRIGGER_RATIO,
+          currentTurnIndex: toolLoops,
+          lastCompaction,
+        })) {
           // Compaction keeps the recent tail verbatim and replaces only the
           // OLDER messages with a short summary. If the kept tail alone already
           // dominates the window — e.g. a large cap-exempt read_file / kb_read
@@ -1790,6 +1811,7 @@ export class AgentRunner {
             });
             compactionControl.epochs++;
             compactionCount++;
+            lastCompaction = { tokensAfter, turnIndex: toolLoops };
             yield {
               type: "compaction",
               tokensBefore,
