@@ -163,7 +163,7 @@ export function createToolFailureGuard(options: ToolFailureGuardOptions = {}): T
   let countedFailures = 0;
   let lastProgress = '本轮尚无成功步骤';
 
-  return {
+  const api: ToolFailureGuard = {
     observe(observation: ToolFailureObservation): ToolFailureDecision {
       const content = typeof observation?.content === 'string' ? observation.content : '';
       const tool = String(observation?.tool || 'tool');
@@ -185,6 +185,10 @@ export function createToolFailureGuard(options: ToolFailureGuardOptions = {}): T
       sameKindStreak = kind === lastKind ? sameKindStreak + 1 : 1;
       lastKind = kind;
       countedFailures += 1;
+      if (COGNITION_READ_TOOLS.has(tool)) {
+        // P1-3: remember WHY, so the blocked write can quote the real failure.
+        ontologyWriteBlocks.set(api, `确定性读取失败已阻断后续本体写入（${tool} → ${code}）：${excerpt(content)}`);
+      }
 
       if (sameKindStreak >= maxSameKind || countedFailures >= maxTotal) {
         return {
@@ -202,6 +206,7 @@ export function createToolFailureGuard(options: ToolFailureGuardOptions = {}): T
       return { sameKindStreak, countedFailures, lastProgress };
     },
   };
+  return api;
 }
 
 /** The tripped reason, always cause → last progress → recovery. */
@@ -227,6 +232,27 @@ export interface GuardableTool {
   readonly name: string;
   readonly executionMode?: 'sequential' | 'parallel';
   execute(input: never, ctx: never): Promise<unknown>;
+}
+
+/**
+ * Cognition reads whose deterministic failure must block a following ontology write.
+ * The breaker counts *consecutive same-kind* failures, so a model that answers a
+ * failed read by switching tool (`cognition_ontology_query` → `create_cognition
+ * (ontology)`) resets the streak and writes anyway. P1-3: a deterministic read
+ * failure is a dead end, so writes to the ontology are refused until the read
+ * succeeds again. State is per guard (one per turn) and kept out of the public
+ * interface on purpose — only the wrapper decides.
+ */
+const COGNITION_READ_TOOLS: ReadonlySet<string> = new Set([
+  'cognition_ontology_query',
+  'transcript_corrections_query',
+]);
+const ontologyWriteBlocks = new WeakMap<ToolFailureGuard, string>();
+
+function isOntologyWriteTool(tool: string, input: unknown): boolean {
+  if (tool !== 'create_cognition') return false;
+  const record = (input ?? {}) as Record<string, unknown>;
+  return record.target === 'ontology' || record.asset_type === 'ontology' || record.ontology === true;
 }
 
 export interface ToolFailureBreakerOptions {
@@ -262,6 +288,16 @@ export function guardToolsWithFailureBreaker<T extends GuardableTool>(
     const wrapped = {
       ...tool,
       async execute(input: never, ctx: never): Promise<unknown> {
+        // P1-3: a deterministic cognition-read failure blocks an ontology write
+        // before it runs — the same-kind streak alone cannot catch a tool switch.
+        const blockReason = ontologyWriteBlocks.get(guard);
+        if (blockReason && isOntologyWriteTool(tool.name, input)) {
+          return {
+            content: `${blockReason}\n\n已阻断：读取失败后不允许继续写入本体；请先让认知查询成功。`,
+            isError: true,
+            endTurn: true,
+          };
+        }
         const result = await tool.execute(input, ctx);
         const record = (result ?? {}) as { content?: unknown; isError?: unknown };
         const decision = guard.observe({
