@@ -4181,6 +4181,27 @@ async function _refreshGroupMembers(cid) {
       if (cid === currentCid) {
         try { _ensureConvCreateAgentInline(); } catch (_) { /* non-fatal */ }
       }
+      // M1: the composer keeps its OWN per-cid member list in localStorage, and
+      // that list is what `_composerMemberPayload` sends as `member_agent_ids`.
+      // The backend members.json is authoritative, so seed the composer from it —
+      // otherwise a conversation whose members exist only on the backend (new
+      // device, cleared storage, members added elsewhere) shows an empty picker
+      // and a selected agent never reaches dispatch.
+      if (cid === currentCid && window.composerMembers) {
+        const cm = window.composerMembers;
+        if (typeof cm.addMember === 'function' && typeof cm.getMembers === 'function') {
+          const existing = cm.getMembers('conversation') || [];
+          const have = new Set(existing.map((m) => `${m.kind || m.type || 'agent'}:${m.id}`));
+          for (const actor of data.actors) {
+            const id = String(actor && actor.id ? actor.id : '').trim();
+            if (!id || id === 'commander' || id === 'user') continue;
+            if (have.has(`agent:${id}`)) continue;
+            try {
+              cm.addMember('conversation', { kind: 'agent', id, name: actor.name || id });
+            } catch (_) { /* non-fatal: composer stays usable */ }
+          }
+        }
+      }
       return data.actors;
     }
   } catch (_) { /* non-fatal */ }
