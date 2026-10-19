@@ -12,6 +12,7 @@ import { cogseedKbManager } from './cogseed-kb-store';
 import { rewriteQuery } from '../transcript_query_rewrite';
 import { isQueryRewriteEnabled } from '../transcript_glossary';
 import { createLogger } from '../../logger';
+import { getWorkspacePath } from '../user_workspace';
 import { createCogSeedTask, listCogSeedSessions, listCogSeedTasks, purgeCogSeedArchivedTasks, readCogSeedSession, readCogSeedTask, readCogSeedTaskByRequestId } from './task-store';
 import { readCogSeedCoordination } from './coordinator';
 import { cogseedCollaborationStore } from './collaboration-store-adapter';
@@ -31,6 +32,7 @@ import {
   type CogSeedWorktreeCreateInput,
   type CogSeedWorktreeRemoveInput,
 } from './worktree-manager';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
@@ -1169,6 +1171,27 @@ export function createCogSeedIpcService(deps: CogSeedIpcServiceDeps = {}) {
           ...(workingDir ? { workingDir } : {}),
         };
         const controller = await controllerPromise;
+        // A2: a native run needs a working directory, otherwise it has no writable
+        // root and document-producing skills spin until `max_tool_rounds` with nothing
+        // written (P2-1). Default to the user's own workspace — a plain writable
+        // folder, NOT a Git repo (same shape as Orkas' userWorkSpace).
+        if (!input.workingDir
+          && (!input.executionKind || input.executionKind === 'cogseed-native')) {
+            // A3: give every run its own output directory so document-producing skills
+            // always have somewhere to write and the user can find the artifacts.
+            try {
+              const runDir = path.join(getWorkspacePath(userId), 'runs', input.requestId);
+              fs.mkdirSync(runDir, { recursive: true });
+              input.workingDir = runDir;
+            } catch { /* fall through to the A4 guard below */ }
+            // A4: never start a native run with no working directory — it would offer
+            // only read tools and spin to `max_tool_rounds` (P2-1). Fail with a reason
+            // the user can act on.
+            if (!input.workingDir) {
+              throw new Error('CogSeed run has no working directory: choose a workspace folder and retry.');
+            }
+        }
+
         if (existing?.status === 'created' && !existing.runtimeWorkerId && input.conversationId
           && !(await isConversationAvailable(userId, input.conversationId))) {
           const admitted = await admitTask(userId, input);
