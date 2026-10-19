@@ -843,3 +843,26 @@ describe('CogSeed IPC service', () => {
     expect(JSON.stringify(result)).not.toContain('codex');
   });
 });
+
+describe('CogSeed IPC service › native run working directory (A2/A3)', () => {
+  it('gives a native run its own directory under the user workspace', async () => {
+    const startCogSeedTask = vi.fn(async () => ({ taskId: 't', status: 'running' }));
+    const service = createCogSeedIpcService({
+      controller: { startCogSeedTask, cancelCogSeedTask: vi.fn() } as never,
+      readTaskByRequestId: vi.fn(async () => null),
+      ensureRunCenterConversation: vi.fn(async () => undefined),
+      readTask: vi.fn(async () => ({ taskId: 't', status: 'running' })),
+      retryTask: vi.fn(),
+      readEvents: vi.fn(async () => []),
+      worktreeManager: { resolve: vi.fn(), list: vi.fn(), create: vi.fn(), remove: vi.fn() } as never,
+    } as never);
+
+    await expect(service.start('ipc-user', { requestId: 'req-a23', task: 'Do work.' }))
+      .resolves.toMatchObject({ taskId: 't' });
+
+    const input = startCogSeedTask.mock.calls[0][1] as { workingDir?: string };
+    expect(input.workingDir).toBeTruthy();
+    // A3: one directory per run, under the user's workspace — a plain folder, no Git.
+    expect(String(input.workingDir)).toMatch(/\/runs\/req-a23$/);
+  });
+});
