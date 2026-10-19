@@ -85,7 +85,15 @@ export const SPIN_CONVERGENCE_TOOL_LOOP_RATIO = 0.75;
 export const MAX_INLINE_TOOL_RESULT_TOKENS_PER_ROUND = 16_000;
 export const TOOL_RESULT_MARKER_RESERVE_TOKENS = 1_000;
 const REQUEST_INPUT_SAFETY_TOKENS = 2_048;
+import {
+  CONTEXT_RETAIN_TAIL_RATIO,
+  assertRetainRatioBelowTrigger,
+} from "./context-compaction-policy.js";
+
 const CONTEXT_COMPACTION_TRIGGER_RATIO = 0.82;
+// C: the retained tail must stay below the trigger, or retention itself keeps the
+// session over the line. Checked at load so a bad pair is a startup error.
+assertRetainRatioBelowTrigger(CONTEXT_RETAIN_TAIL_RATIO, CONTEXT_COMPACTION_TRIGGER_RATIO);
 
 /**
  * Context summarization is an auxiliary data-transformation call, not another
