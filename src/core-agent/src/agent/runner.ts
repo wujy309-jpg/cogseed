@@ -253,6 +253,22 @@ export const LOOP_HARD = 5;
 export const NEAR_DUP_LOOP_WARN = 6;
 export const NEAR_DUP_LOOP_HARD = 12;
 
+/** Cross-tool thrash: the exact/near-duplicate detectors above only see the SAME
+ *  call repeated. A model that searches with a different tool each time never
+ *  repeats a signature, so it can spin until `max_tool_rounds` with nothing
+ *  produced — the observed P2-1 failure (55–61 calls, zero `write_file`). This
+ *  tier counts CONSECUTIVE read-only calls and resets on any producing call. */
+export const READ_ONLY_STREAK_WARN = 12;
+export const READ_ONLY_STREAK_HARD = 20;
+
+/** Tools that only gather information. Anything outside this set (write_file,
+ *  edit_file, create_artifact, run_skill, connectors, …) counts as progress. */
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "read_file", "stat_file", "search_files", "grep_files",
+  "search_mate_kb", "list_connector_tools", "cognition_ontology_query",
+  "transcript_corrections_query", "list_task_experiences", "read_task_experience",
+]);
+
 /** Compaction skips a pass that would free less than this fraction of the context
  *  window — when the verbatim-kept tail dominates the window, summarising the
  *  small remainder makes no real progress and just burns a summary LLM call each
@@ -931,6 +947,8 @@ export class AgentRunner {
     let loopSig: string | null = null;
     let loopRepeat = 0;
     let loopWarnedForStreak = false;
+    let readOnlyStreak = 0;
+    let readOnlyWarnedForStreak = false;
     let pendingLoopNudge: string | null = null;
     // Near-duplicate streak: same call modulo volatile id/timestamp fields.
     let normSig: string | null = null;
@@ -1318,6 +1336,26 @@ export class AgentRunner {
         // at LOOP_WARN (injected at the post-tool-result boundary below).
         let loopHardTripped = false;
         for (const call of toolCalls as ReadonlyArray<{ name: string; input: unknown }>) {
+          // Cross-tool thrash tier: any producing call resets the streak.
+          if (READ_ONLY_TOOLS.has(call.name)) {
+            readOnlyStreak += 1;
+          } else {
+            readOnlyStreak = 0;
+            readOnlyWarnedForStreak = false;
+          }
+          if (readOnlyStreak >= READ_ONLY_STREAK_HARD) {
+            loopHardTripped = true;
+            break;
+          }
+          if (readOnlyStreak >= READ_ONLY_STREAK_WARN && !readOnlyWarnedForStreak) {
+            readOnlyWarnedForStreak = true;
+            if (!pendingLoopNudge) {
+              pendingLoopNudge =
+                `You have made ${readOnlyStreak} consecutive read/search calls without producing anything. `
+                + `This is not making progress. Produce the result now from what you already have `
+                + `(write the file or answer), or stop and say exactly what is missing.`;
+            }
+          }
           const sig = toolCallSignature(call);
           if (sig === loopSig) {
             loopRepeat += 1;
