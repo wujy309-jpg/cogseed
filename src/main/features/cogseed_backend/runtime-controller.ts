@@ -736,6 +736,14 @@ export function createCogSeedRuntimeController(options: CogSeedRuntimeController
         }, projectTaskEvent);
       }
     } catch (error) {
+      // Everything unexpected below collapses into `runtime_worker_error`, which
+      // used to leave the real exception unrecorded — a worker failure could only
+      // be guessed at from surrounding logs. Record it before classifying.
+      log.error('CogSeed Runtime run failed', {
+        taskId: task.taskId,
+        phase: 'run',
+        error: logErrorRef(error),
+      });
       const latest = await readCogSeedTask(userId, task.taskId);
       if (activeRuns.get(task.taskId) === controller
         && latest && !terminal(latest) && latest.status !== 'recoverable') {
