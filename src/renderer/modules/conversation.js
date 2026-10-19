@@ -1315,6 +1315,59 @@ function _chatRichCreateApi(textarea, editor) {
     _chatRichNormalizeMentionGaps(editor);
     api.syncFromEditor(true);
   });
+  /** M3: delete a mention chip as ONE unit.
+   *  Chips are `contenteditable=false` atoms, and Chromium's default
+   *  Backspace/Delete did not reliably remove them at the boundary — the user
+   *  was left with a name that could not be edited or deleted. When the caret
+   *  sits immediately before (Backspace) or after (Delete) a chip, remove the
+   *  whole node plus the single separating space, and keep the caret where the
+   *  chip used to be. Returns true when it handled the key. */
+  function _deleteAdjacentMentionChip(editor, direction) {
+    try {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount !== 1 || !sel.isCollapsed) return false;
+      const range = sel.getRangeAt(0);
+      const node = range.startContainer;
+      const offset = range.startOffset;
+      const isChip = (el) => !!el && el.nodeType === Node.ELEMENT_NODE
+        && el.classList && el.classList.contains('chat-rich-mention-chip');
+      const skipBlank = (el, back) => {
+        let cur = el;
+        while (cur && cur.nodeType === Node.TEXT_NODE && !(cur.textContent || '').trim()) {
+          cur = back ? cur.previousSibling : cur.nextSibling;
+        }
+        return cur;
+      };
+      let chip = null;
+      if (direction === 'backward') {
+        if (node.nodeType === Node.ELEMENT_NODE) chip = offset > 0 ? node.childNodes[offset - 1] : null;
+        else if (offset === 0) chip = node.previousSibling;
+        chip = skipBlank(chip, true);
+      } else {
+        if (node.nodeType === Node.ELEMENT_NODE) chip = node.childNodes[offset] || null;
+        else if (offset === (node.textContent || '').length) chip = node.nextSibling;
+        chip = skipBlank(chip, false);
+      }
+      if (!isChip(chip)) return false;
+      const parent = chip.parentNode;
+      const index = Array.prototype.indexOf.call(parent.childNodes, chip);
+      const after = chip.nextSibling;
+      parent.removeChild(chip);
+      if (after && after.nodeType === Node.TEXT_NODE && (after.textContent || '').startsWith(' ')) {
+        after.textContent = after.textContent.slice(1);
+      }
+      const caret = document.createRange();
+      if (index < parent.childNodes.length) caret.setStart(parent, index);
+      else caret.selectNodeContents(parent || (editor || parent));
+      caret.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(caret);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   editor.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return;
     api.syncTextareaSelectionFromEditor();
@@ -1323,6 +1376,12 @@ function _chatRichCreateApi(textarea, editor) {
       if (typeof _deleteChatUseTokenAtCaret === 'function'
         && _deleteChatUseTokenAtCaret(textarea, direction)) {
         e.preventDefault();
+        return;
+      }
+      // M3: whole-chip deletion (see _deleteAdjacentMentionChip).
+      if (_deleteAdjacentMentionChip(editor, direction)) {
+        e.preventDefault();
+        try { api.syncFromEditor(true); } catch (_) { /* non-fatal */ }
         return;
       }
       // Mention chips are contenteditable=false atoms. Chromium must own their
@@ -4152,6 +4211,26 @@ function _repaintPendingActorHeaders(cid) {
     delete bubble.dataset.actorPending;
   }
 }
+      /** M1: seed the composer's own member list from the backend roster.
+       *  The composer keeps `chat.membersByCid` in localStorage and that list is what
+       *  `_composerMemberPayload` sends as `member_agent_ids`; the backend
+       *  members.json is authoritative, so unknown agents are added here (idempotent). */
+      function _seedComposerFromBackendActors(actors) {
+        if (!Array.isArray(actors) || !window.composerMembers) return;
+        const cm = window.composerMembers;
+        if (typeof cm.addMember !== 'function' || typeof cm.getMembers !== 'function') return;
+        const existing = cm.getMembers('conversation') || [];
+        const have = new Set(existing.map((m) => `${m.kind || m.type || 'agent'}:${m.id}`));
+        for (const actor of actors) {
+          const id = String(actor && actor.id ? actor.id : '').trim();
+          if (!id || id === 'commander' || id === 'user') continue;
+          if (have.has(`agent:${id}`)) continue;
+          try {
+            cm.addMember('conversation', { kind: 'agent', id, name: actor.name || id });
+          } catch (_) { /* non-fatal: composer stays usable */ }
+        }
+      }
+
 
 async function _refreshGroupMembers(cid) {
   if (!cid) return [];
@@ -4181,6 +4260,7 @@ async function _refreshGroupMembers(cid) {
       if (cid === currentCid) {
         try { _ensureConvCreateAgentInline(); } catch (_) { /* non-fatal */ }
       }
+      _seedComposerFromBackendActors(data.actors);
       return data.actors;
     }
   } catch (_) { /* non-fatal */ }
