@@ -217,7 +217,13 @@ function _isManagedWorkspaceRoot(dirPath: string): boolean {
  */
 export function getWorkspacePath(userId: string, projectId?: string): string {
   const cfg = readConfig(userId);
-  return _effectivePath(cfg, projectId);
+  const resolved = _effectivePath(cfg, projectId);
+  // A1: the default workspace is where runs get their writable root, so it must
+  // exist before anything asks for it — a run pointed at a missing directory has
+  // no writable root and only search tools (P2-1). Safe to create: the path is
+  // always CogSeed-owned (~/.cogseed/...), never a user directory.
+  try { fs.mkdirSync(resolved, { recursive: true }); } catch { /* read-only fs */ }
+  return resolved;
 }
 
 /**
