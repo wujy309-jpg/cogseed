@@ -14,6 +14,8 @@ import { requireContentCategory } from '../features/recall/content-category';
  * Handler tables below are the full router — add a new logical channel by
  * dropping it into `invokeHandlers` or `streamHandlers`.
  */
+import { outboxRequeueIsolated } from '../features/p3394_bridge/outbound-outbox';
+
 
 import { app, ipcMain, dialog, BrowserWindow, screen, type WebContents } from 'electron';
 
@@ -2331,6 +2333,12 @@ const invokeHandlers: Record<string, InvokeHandler> = {
       await groupChat.reconcileRun(ctx.userId, cid, request.dispatch_payload.run_id);
     }
     return result;
+  },
+
+  // 运维：把被隔离的 outbox 记录放回重放集（隔离可逆，不必手改 JSONL）。
+  'p3394.requeueIsolatedOutbox': async ({ messageId }, _ctx) => {
+    if (typeof messageId !== 'string' || !messageId) throw new Error('invalid messageId');
+    return { requeued: outboxRequeueIsolated(messageId) };
   },
 
   'p3394.listProtocolEvents': async ({ cid }, ctx) => {

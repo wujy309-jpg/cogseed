@@ -38,7 +38,7 @@ function appendSecure(file: string, text: string): void {
   try { fs.chmodSync(file, 0o600); } catch { /* best effort */ }
 }
 
-export type P3394OutboxStatus = 'submitted' | 'sent' | 'completed' | 'failed';
+export type P3394OutboxStatus = 'submitted' | 'sent' | 'completed' | 'failed' | 'isolated';
 
 export interface P3394OutboxRecord {
   message_id: string;
@@ -94,7 +94,9 @@ export function compactOutboxFile(file: string): { before: number; after: number
   const keep: string[] = [];
   for (const [messageId, snapshot] of envelopes) {
     const status = statuses.get(messageId)?.status;
-    if (!status || status === 'submitted' || status === 'sent') {
+    // `isolated` keeps its envelope on purpose: it is out of the replay set but
+    // must stay recoverable (never drop a record because delivery failed).
+    if (!status || status === 'submitted' || status === 'sent' || status === 'isolated') {
       keep.push(JSON.stringify({ at: statuses.get(messageId)?.at ?? new Date().toISOString(), message_id: messageId, kind: 'envelope', peer: snapshot.peer, envelope: snapshot.envelope }));
       if (status) keep.push(JSON.stringify(statuses.get(messageId)));
     }
@@ -154,6 +156,69 @@ export function outboxMarkCompleted(messageId: string): void {
 export function outboxMarkFailed(messageId: string, error: string): void {
   // 错误串可能携带 Bearer/key=value 等位置化 secret，落盘前统一脱敏。
   appendEvent({ at: new Date().toISOString(), message_id: messageId, status: 'failed', error: sanitizeLogTextForUpload(String(error)).slice(0, 300) });
+}
+
+/** 隔离：信封永久留在文件里（压缩保留），但移出重放集。用于**配置级**
+ *  不可达（peer 未注册 / 无 endpoint）——重放再多次也不会成功，隔离后仍可
+ *  人工/后续重新入队，不做删除。 */
+export function outboxMarkIsolated(messageId: string, error: string): void {
+  appendEvent({ at: new Date().toISOString(), message_id: messageId, status: 'isolated', error: sanitizeLogTextForUpload(String(error)).slice(0, 300) });
+}
+
+/** 记录一次配置级重放失败并返回累计次数（追加式，不改写历史事件）。 */
+export function outboxRecordReplayFailure(messageId: string, error: string): number {
+  const file = outboxFilePath();
+  appendSecure(file, redactP3394Secrets(JSON.stringify({
+    at: new Date().toISOString(), message_id: messageId, kind: 'replay_failure',
+    error: sanitizeLogTextForUpload(String(error)).slice(0, 300),
+  })) + '\n');
+  let count = 0;
+  try {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line) as { message_id?: string; kind?: string };
+      if (event.message_id !== messageId) continue;
+      // A requeue is a fresh start: failures before it must not count again,
+      // otherwise an operator-requeued record would re-isolate on the next boot.
+      if (event.kind === 'requeued') count = 0;
+      else if (event.kind === 'replay_failure') count += 1;
+    }
+  } catch { /* unreadable file → keep the conservative retry behavior */ }
+  return count;
+}
+
+/** 解除隔离：把记录放回重放集，并**重置失败计数**（requeue 之后重新计时）。
+ *  隔离是可逆的运维动作，不需要手改 JSONL；信封本身一直在文件里。 */
+export function outboxRequeueIsolated(messageId: string): boolean {
+  const current = outboxListForReplay();
+  if (current.some((record) => record.message_id === messageId)) return false; // 已在重放集
+  const file = outboxFilePath();
+  if (!fs.existsSync(file)) return false;
+  let isolated = false;
+  let hasEnvelope = false;
+  try {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line) as { message_id?: string; status?: string; kind?: string };
+      if (event.message_id !== messageId) continue;
+      if (event.kind === 'envelope') hasEnvelope = true;
+      if (event.status === 'isolated') isolated = true;
+    }
+  } catch { return false; }
+  // 只对真正被隔离、且信封还在的记录生效。
+  if (!isolated || !hasEnvelope) return false;
+  const at = new Date().toISOString();
+  appendSecure(file, JSON.stringify({ at, message_id: messageId, kind: 'requeued' }) + '\n');
+  appendEvent({ at, message_id: messageId, status: 'submitted' });
+  log.info('P3394 outbox record requeued', { message_id: messageId });
+  return true;
+}
+
+/** 重放失败后的动作。只有**配置级**不可达才可能隔离；阈值 1 = 首次即隔离，
+ *  更大的阈值让"网关晚启动"这类情况有缓冲。瞬时错误永远重试。 */
+export function outboxReplayDecision(error: string, attempts: number, isolateAfterAttempts: number): 'retry' | 'isolate' {
+  const configLevel = error === 'p3394_peer_not_registered' || error === 'p3394_peer_has_no_endpoint';
+  return configLevel && attempts >= Math.max(1, Math.floor(isolateAfterAttempts)) ? 'isolate' : 'retry';
 }
 
 /** 重放集：submitted / sent 状态的记录（按 message_id 折叠最新状态），

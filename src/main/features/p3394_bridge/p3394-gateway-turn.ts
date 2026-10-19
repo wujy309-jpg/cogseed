@@ -9,6 +9,7 @@
  */
 
 import { detectOne } from '../local_agents/registry.js';
+import { gatewayDispatchBlock } from './gateway-dispatch-gate.js';
 import { getP3394OutboundHub } from './app-wiring';
 import { buildP3394OutboundEnvelope } from '../cogseed_backend/p3394-host-adapter';
 import type { P3394OutboundReference } from '../cogseed_backend/p3394-host-adapter';
@@ -111,9 +112,20 @@ export async function runP3394GatewayTurn(input: P3394GatewayTurnInput): Promise
   if (!nodeId) {
     return { text: '', error: 'p3394_unsupported_cli: ' + input.cli, failureKind: 'runtime', failureCode: 'p3394_unsupported_cli' };
   }
+  // The gateway spawns the CLI itself, so the runner's dispatch gate never runs
+  // on this path — a retired/disabled agent would otherwise stay reachable.
+  const blocked = await gatewayDispatchBlock(input.uid, input.agent.agent_id || nodeId);
+  if (blocked) return { text: '', ...blocked };
   const hub = getP3394OutboundHub();
   if (!hub) {
-    return { text: '', error: 'p3394_bridge_unavailable', failureKind: 'runtime', failureCode: 'p3394_bridge_unavailable' };
+    return {
+      text: '',
+      error: 'p3394_bridge_unavailable',
+      failureKind: 'runtime',
+      failureCode: 'p3394_bridge_unavailable',
+      // The bridge is not wired at all — nothing this turn can fix.
+      infrastructureFailure: true,
+    };
   }
   const prompt = String(input.prompt || '').trim();
   if (!prompt) {
@@ -126,7 +138,9 @@ export async function runP3394GatewayTurn(input: P3394GatewayTurnInput): Promise
       return {
         text: '',
         error: '节点未接入：' + nodeId + ' 不在线且不是 CogSeed 可自动托管的 CLI。请让对方启动网关（p3394-gateway）后重试。',
-        failureKind: 'runtime',
+        // Needs the peer or the user to act and nothing was executed: report a
+        // pre-execution config failure instead of a runtime crash.
+        failureKind: 'config',
         failureCode: 'p3394_node_offline',
       };
     }
@@ -139,7 +153,7 @@ export async function runP3394GatewayTurn(input: P3394GatewayTurnInput): Promise
       return {
         text: '',
         error: '节点未接入：未在本机检测到 ' + input.cli + ' 命令。请先安装/配置该 CLI 后再试。',
-        failureKind: 'runtime',
+        failureKind: 'config',
         failureCode: 'p3394_cli_not_found',
       };
     }
@@ -152,7 +166,7 @@ export async function runP3394GatewayTurn(input: P3394GatewayTurnInput): Promise
       return {
         text: '',
         error: '节点未接入：' + started.error + '。请在 AI 团队 → 新建智能体 → 外接 里重新接入该智能体。',
-        failureKind: 'runtime',
+        failureKind: 'config',
         failureCode: 'p3394_gateway_start_failed',
       };
     }
