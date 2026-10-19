@@ -283,6 +283,9 @@ describe('CogSeed IPC service', () => {
     await expect(service.cancel('ipc-user', 'cogseed-task-ipc')).resolves.toMatchObject({ status: 'cancelled' });
     expect(controller.startCogSeedTask).toHaveBeenNthCalledWith(1, 'ipc-user', {
       requestId: 'req-ipc', task: 'Do work.',
+      // A2: a native run without an explicit directory gets the user workspace,
+      // so it has a writable root instead of spinning to max_tool_rounds.
+      workingDir: expect.any(String),
       conversationId: cogSeedRunCenterConversationId('req-ipc'),
     });
     expect(controller.startCogSeedTask).toHaveBeenNthCalledWith(2, 'ipc-user', {

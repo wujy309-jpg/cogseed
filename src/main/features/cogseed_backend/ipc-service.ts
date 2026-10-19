@@ -12,6 +12,7 @@ import { cogseedKbManager } from './cogseed-kb-store';
 import { rewriteQuery } from '../transcript_query_rewrite';
 import { isQueryRewriteEnabled } from '../transcript_glossary';
 import { createLogger } from '../../logger';
+import { getWorkspacePath } from '../user_workspace';
 import { createCogSeedTask, listCogSeedSessions, listCogSeedTasks, purgeCogSeedArchivedTasks, readCogSeedSession, readCogSeedTask, readCogSeedTaskByRequestId } from './task-store';
 import { readCogSeedCoordination } from './coordinator';
 import { cogseedCollaborationStore } from './collaboration-store-adapter';
@@ -1169,6 +1170,15 @@ export function createCogSeedIpcService(deps: CogSeedIpcServiceDeps = {}) {
           ...(workingDir ? { workingDir } : {}),
         };
         const controller = await controllerPromise;
+        // A2: a native run needs a working directory, otherwise it has no writable
+        // root and document-producing skills spin until `max_tool_rounds` with nothing
+        // written (P2-1). Default to the user's own workspace — a plain writable
+        // folder, NOT a Git repo (same shape as Orkas' userWorkSpace).
+        if (!input.workingDir
+          && (!input.executionKind || input.executionKind === 'cogseed-native')) {
+          try { input.workingDir = getWorkspacePath(userId); } catch { /* keep undefined */ }
+        }
+
         if (existing?.status === 'created' && !existing.runtimeWorkerId && input.conversationId
           && !(await isConversationAvailable(userId, input.conversationId))) {
           const admitted = await admitTask(userId, input);
