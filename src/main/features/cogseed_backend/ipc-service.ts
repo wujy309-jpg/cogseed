@@ -1177,19 +1177,19 @@ export function createCogSeedIpcService(deps: CogSeedIpcServiceDeps = {}) {
         // folder, NOT a Git repo (same shape as Orkas' userWorkSpace).
         if (!input.workingDir
           && (!input.executionKind || input.executionKind === 'cogseed-native')) {
-          // A3: give every run its own output directory so document-producing skills
-  // always have somewhere to write and the user can find the artifacts.
-  try {
-    const runDir = path.join(getWorkspacePath(userId), 'runs', input.requestId);
-    fs.mkdirSync(runDir, { recursive: true });
-    input.workingDir = runDir;
-  } catch { /* fall through to the A4 guard below */ }
-  // A4: never start a native run with no working directory — it would offer only
-  // read tools, so a document-producing skill spins until `max_tool_rounds`
-  // (P2-1) with nothing written. Fail here, with a reason the user can act on.
-  if (!input.workingDir) {
-    throw new Error('CogSeed run has no working directory: choose a workspace folder and retry.');
-  }
+            // A3: give every run its own output directory so document-producing skills
+            // always have somewhere to write and the user can find the artifacts.
+            try {
+              const runDir = path.join(getWorkspacePath(userId), 'runs', input.requestId);
+              fs.mkdirSync(runDir, { recursive: true });
+              input.workingDir = runDir;
+            } catch { /* fall through to the A4 guard below */ }
+            // A4: never start a native run with no working directory — it would offer
+            // only read tools and spin to `max_tool_rounds` (P2-1). Fail with a reason
+            // the user can act on.
+            if (!input.workingDir) {
+              throw new Error('CogSeed run has no working directory: choose a workspace folder and retry.');
+            }
         }
 
         if (existing?.status === 'created' && !existing.runtimeWorkerId && input.conversationId

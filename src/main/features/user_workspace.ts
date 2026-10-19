@@ -222,7 +222,11 @@ export function getWorkspacePath(userId: string, projectId?: string): string {
   // exist before anything asks for it — a run pointed at a missing directory has
   // no writable root and only search tools (P2-1). Safe to create: the path is
   // always CogSeed-owned (~/.cogseed/...), never a user directory.
-  try { fs.mkdirSync(resolved, { recursive: true }); } catch { /* read-only fs */ }
+  // Short-circuit: getWorkspacePath sits on the file-tool resolution hot path, so
+  // only pay for mkdir when the directory is actually missing.
+  if (!fs.existsSync(resolved)) {
+    try { fs.mkdirSync(resolved, { recursive: true }); } catch { /* read-only fs */ }
+  }
   return resolved;
 }
 
