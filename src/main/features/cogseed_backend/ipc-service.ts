@@ -32,6 +32,7 @@ import {
   type CogSeedWorktreeCreateInput,
   type CogSeedWorktreeRemoveInput,
 } from './worktree-manager';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHash } from 'node:crypto';
 import {
@@ -1176,7 +1177,13 @@ export function createCogSeedIpcService(deps: CogSeedIpcServiceDeps = {}) {
         // folder, NOT a Git repo (same shape as Orkas' userWorkSpace).
         if (!input.workingDir
           && (!input.executionKind || input.executionKind === 'cogseed-native')) {
-          try { input.workingDir = getWorkspacePath(userId); } catch { /* keep undefined */ }
+          // A3: give every run its own output directory so document-producing skills
+  // always have somewhere to write and the user can find the artifacts.
+  try {
+    const runDir = path.join(getWorkspacePath(userId), 'runs', input.requestId);
+    fs.mkdirSync(runDir, { recursive: true });
+    input.workingDir = runDir;
+  } catch { /* keep undefined: A4 surfaces it instead of a silent spin */ }
         }
 
         if (existing?.status === 'created' && !existing.runtimeWorkerId && input.conversationId
