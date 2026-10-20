@@ -5435,6 +5435,35 @@ const invokeHandlers: Record<string, InvokeHandler> = {
     }
   },
 
+  // 将知识库中的产物复制到用户选择的本机位置。路径解析沿用 kb.openFile，
+  // 因此个人库和共享库都经过同一套越界校验，不把绝对路径暴露给渲染层。
+  'kb.download': async ({ spaceId, path: relPath, fileName } = {}, ctx) => {
+    const p = typeof relPath === 'string' ? relPath.trim() : '';
+    if (!p) return { ok: false, error: 'missing path' };
+    try {
+      const resolvedKb = await resolveKbFileAbsPath(ctx.userId, spaceId, p);
+      if (!fs.existsSync(resolvedKb.abs) || !fs.statSync(resolvedKb.abs).isFile()) {
+        return { ok: false, error: 'file not found' };
+      }
+      const name = path.basename(String(fileName || resolvedKb.abs));
+      const parent = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      const options = {
+        title: '下载知识库产物',
+        defaultPath: path.join(app.getPath('downloads'), name),
+      };
+      const result = parent
+        ? await dialog.showSaveDialog(parent, options)
+        : await dialog.showSaveDialog(options);
+      if (result.canceled || !result.filePath) return { ok: true, canceled: true };
+      await fs.promises.copyFile(resolvedKb.abs, result.filePath);
+      return { ok: true, canceled: false, filePath: result.filePath };
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: code === 'ENOENT' || msg.includes('not found:') ? 'file not found' : msg };
+    }
+  },
+
   // 网页链接抓取导入：fetch URL → 提取标题+正文 → 存为 Markdown 到当前库（个人/共享）。
   'kb.importWebUrl': async ({ dir, spaceId, url } = {}, ctx) => {
     const u = String(url || '').trim();
