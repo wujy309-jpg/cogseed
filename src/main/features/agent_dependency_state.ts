@@ -24,13 +24,15 @@ import {
 } from './marketplace_agent_deps';
 import { readContentStatus } from './marketplace/installed-version';
 
-export type AgentDependencyReason = 'disabled' | 'unsupported' | 'missing';
+export type AgentDependencyReason = 'disabled' | 'unsupported' | 'missing' | 'user_disabled';
 
 export interface AgentDependencyState {
   /** `deps_blocked`：有依赖被停用或不被支持，Agent 不可用；`deps_missing`：本机缺少依赖；`ready`：就绪。 */
   status: 'ready' | 'deps_blocked' | 'deps_missing';
   /** 有问题的依赖 id（按 `skill_list` 顺序）。 */
   ids: string[];
+  /** 只在有用户停用的依赖时出现：`user_disabled` 与 Hub 停用（`disabled`）区分，便于界面给出「启用 X」。 */
+  reasons?: Record<string, AgentDependencyReason>;
 }
 
 const READY: AgentDependencyState = Object.freeze({ status: 'ready', ids: [] }) as AgentDependencyState;
@@ -41,6 +43,32 @@ export function dependencyStateFromPlan(plan: DependencyPlan): AgentDependencySt
   if (blocked.length) return { status: 'deps_blocked', ids: blocked };
   if (plan.toInstall.length) return { status: 'deps_missing', ids: [...plan.toInstall] };
   return READY;
+}
+
+/**
+ * 纯判定：叠加用户自己停用的依赖（`component-enabled.json`）。用户停用让 Agent 在界面上不可手动使用
+ * （S4 spec FR-027，与 S3 一致）；`builtin:` 引用与随包私有 Skill 不受用户停用名单影响。
+ * `disabledIdOf(ref)`：`skill_list` 里的一项（id 或旧写法的技能名）若指向一个被用户停用的技能，返回该技能 id，
+ * 否则返回 ''。返回 id 而不是布尔，是为了让 `ids` / `reasons` 始终是真实 id（界面据此一键「启用」）。
+ * 运行时不看这个状态：主智能体照常派活，只是被停用的技能不会出现在该 Agent 的技能里（2026-10-20 定）。
+ */
+export function withUserDisabledDependencies(
+  state: AgentDependencyState,
+  skillList: readonly string[] | undefined,
+  privateIds: ReadonlySet<string>,
+  disabledIdOf: (ref: string) => string,
+): AgentDependencyState {
+  const userIds = (skillList ?? [])
+    .map((ref) => String(ref || '').trim())
+    .filter((ref) => ref && !ref.startsWith('builtin:') && !privateIds.has(ref))
+    .map((ref) => disabledIdOf(ref))
+    .filter((id, i, all) => id && all.indexOf(id) === i);
+  if (!userIds.length) return state;
+  const blocked = state.status === 'deps_blocked' ? state.ids : [];
+  const ids = [...blocked, ...userIds.filter((id) => !blocked.includes(id))];
+  const reasons: Record<string, AgentDependencyReason> = { ...(state.reasons ?? {}) };
+  for (const id of userIds) reasons[id] = 'user_disabled';
+  return { status: 'deps_blocked', ids, reasons };
 }
 
 /** 该 Agent 的随包私有 Skill id：安装时解到 `<agent>/skills/<id>/SKILL.md`。 */
@@ -77,12 +105,20 @@ export function builtinCapabilityAvailable(uid: string, name: string, appVersion
   try { return fs.existsSync(path.join(userSystemSkillDir(uid, name), 'SKILL.md')); } catch { return false; }
 }
 
-/** 读盘版本：只读本机，不联网。`skillList` 缺省或为空时直接返回就绪。 */
+/** 读盘版本：只读本机，不联网。`skillList` 缺省或为空时直接返回就绪。
+ *  `userDisabledSkills`（可选）：用户停用的技能 id 集合，或 ref → 被停用技能 id 的解析函数，传入时一并判定
+ *  （见 `withUserDisabledDependencies`）。 */
 export function readAgentDependencyState(
   uid: string, agentId: string, skillList: readonly string[] | undefined, appVersion = '',
+  userDisabledSkills?: ReadonlySet<string> | ((ref: string) => string),
 ): AgentDependencyState {
   if (!skillList || skillList.length === 0) return READY;
-  return dependencyStateFromPlan(planAgentDependencies(
-    skillList, privateSkillIds(uid, agentId), localSkillState(uid), (name) => builtinCapabilityAvailable(uid, name, appVersion),
+  const privateIds = privateSkillIds(uid, agentId);
+  const state = dependencyStateFromPlan(planAgentDependencies(
+    skillList, privateIds, localSkillState(uid), (name) => builtinCapabilityAvailable(uid, name, appVersion),
   ));
+  if (!userDisabledSkills) return state;
+  if (typeof userDisabledSkills === 'function') return withUserDisabledDependencies(state, skillList, privateIds, userDisabledSkills);
+  if (userDisabledSkills.size === 0) return state;
+  return withUserDisabledDependencies(state, skillList, privateIds, (ref) => (userDisabledSkills.has(ref) ? ref : ''));
 }

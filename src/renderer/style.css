@@ -4158,6 +4158,10 @@ body.is-sidebar-resizing iframe { pointer-events: none; }
 
 .skill-card-desc {
   flex: 1;
+  /* Cap at two lines like `.agent-card-desc`: with `flex: 1` alone the box grows to the row's
+     tallest card and a clipped third line shows under the ellipsis. */
+  min-height: calc(var(--font-size-ui-sm) * 1.5 * 2);
+  max-height: calc(var(--font-size-ui-sm) * 1.5 * 2);
   font-size: var(--font-size-ui-sm);
   line-height: 1.5;
   color: var(--text-secondary);
@@ -18841,18 +18845,42 @@ body:has(#panel-settings.active) .main-top-actions {
 .agents-detail-gateway-text { font-size: 12px; color: var(--cs-ink-soft, #666); }
 
 /* P3394 已接入节点（外接 tab 统一注册表管理区） */
-.agents-ext-peers-empty { font-size: 12px; color: var(--cs-ink-soft, #666); padding: 6px 2px; }
 /* 名册迁入 Dashboard 后的跳转入口（创建弹窗 External tab 底部） */
 .agents-ext-peers-moved {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-sm, 10px);
-  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
 }
+/* 「外接」tab 卡片选择（2026-10-20 改版）：本机识别到的智能体两列卡片，选中描绿边。 */
+.agent-ext-pick { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); }
+.agent-ext-pick-scanning { grid-column: 1 / -1; padding: var(--space-4); border: 1px dashed var(--line-default); border-radius: var(--radius-card); color: var(--text-muted); font-size: var(--font-size-ui-sm); text-align: center; }
+.agent-ext-card { display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line-default); border-radius: var(--radius-card); background: var(--surface-card); cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+.agent-ext-card:hover:not(.is-unavailable) { border-color: var(--line-strong); }
+.agent-ext-card:focus-visible { outline: 2px solid var(--success); outline-offset: 2px; }
+.agent-ext-card.is-selected { border-color: var(--success); background: color-mix(in srgb, var(--success-soft) 40%, var(--surface-card)); }
+.agent-ext-card.is-unavailable { cursor: help; }
+.agent-ext-card.is-unavailable .agent-ext-card__text strong { color: var(--text-muted); }
+.agent-ext-card__avatar { display: flex; flex: none; }
+.agent-ext-card__letter { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--radius-sm); background: var(--success-soft); color: var(--success); font-size: var(--font-size-ui-sm); font-weight: var(--font-weight-semibold); }
+.agent-ext-card.is-unavailable .agent-ext-card__letter { background: var(--surface-subtle); color: var(--text-muted); }
+.agent-ext-card__text { display: grid; gap: 2px; min-width: 0; }
+.agent-ext-card__text strong { overflow: hidden; color: var(--text-heading); font-size: var(--font-size-ui); font-weight: var(--font-weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
+.agent-ext-card__text > span { overflow: hidden; color: var(--text-muted); font-size: var(--font-size-meta); text-overflow: ellipsis; white-space: nowrap; }
+.agent-ext-card__check { display: flex; margin-left: auto; color: var(--success); }
+.agent-ext-card__check .ui-icon { width: 16px; height: 16px; }
+.agent-ext-pick-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: 6px; }
+.agent-ext-pick-head > label { min-width: 0; margin-bottom: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#agent-ext-missing-hint.is-warning { color: var(--status-warning-text); }
+/* 选中后出现的字段：和「创建」页同样的白底表单，上方一条分隔线，不再套灰框。 */
+.agent-ext-fields { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line-subtle); }
+.agent-ext-fields .form-row:last-child { margin-bottom: 0; }
+#agent-ext-provider-row .ai-select { display: block; width: 100%; }
+.agent-ext-fields.is-idle label { color: var(--text-muted); }
+.agent-ext-fields .ai-select-trigger:disabled { opacity: .6; cursor: not-allowed; }
+.agent-create-later-hint { margin: var(--space-1) 0 0; }
 .agents-ext-peer-row {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
@@ -20325,6 +20353,89 @@ body:has(#panel-settings.active) .main-top-actions {
 .connector-popup .connectors-detail-auth-url { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .connector-popup .connectors-detail-auth-url-label { margin: 0; }
 .connector-popup .connectors-detail-auth-url-value { max-width: 100%; overflow-wrap: anywhere; }
+/* S4 catalog sub-view chrome (registry S4-PV-001): back row for 我的智能体 / 我的技能 and the
+   toolbar entry host. Hidden rows must stay hidden despite display rules elsewhere. */
+.catalog-subview-back { display: flex; align-items: center; gap: var(--space-2); margin: 0 0 var(--space-2); color: var(--text-secondary); font-size: var(--font-size-meta); }
+/* The ghost back button's own padding would indent the row; pull it so its chevron lines up with the page content. */
+.catalog-subview-back > .ui-button:first-child { margin-left: calc(-1 * var(--space-2)); }
+.catalog-subview-back[hidden], .catalog-toolbar-actions:empty { display: none; }
+.catalog-subview-sep { color: var(--text-muted); }
+.catalog-toolbar-actions { display: inline-flex; gap: 8px; align-items: center; }
+/* S4 catalog popup (registry S4-PV-001): reuses the connector usage popup layout above;
+   only the agent/skill-specific pieces are styled here. */
+/* Detail popup layout (reference: 2026-10-19 one-shot mock): roomy padding, a 56px soft round
+   icon, a dark body description, 「能做什么」 as a soft card with green checks, examples as filled
+   full-width rows (no border) with a quiet hint beside the heading, one primary action bottom-right. */
+.catalog-popup.ui-modal--lg { width: min(640px, calc(100vw - 32px)); }
+.catalog-popup .ui-modal__header { align-items: center; gap: var(--space-4); padding: var(--space-6) var(--space-6) 0; }
+.catalog-popup .ui-modal__title { font-size: var(--font-size-heading); font-weight: var(--font-weight-semibold); line-height: 1.3; }
+.catalog-popup .ui-modal__description { margin-top: var(--space-1); color: var(--text-secondary); font-size: var(--font-size-ui-sm); }
+.catalog-popup .ui-modal__body { padding: var(--space-5) var(--space-6) 0; }
+.catalog-popup .ui-modal__footer { padding: var(--space-6); }
+.catalog-popup .ui-modal__footer > .ui-button--primary { min-width: 96px; }
+.catalog-popup-icon { display: flex; flex: 0 0 56px; align-items: center; justify-content: center; width: 56px; height: 56px; overflow: hidden; border-radius: 50%; background: var(--success-soft); color: var(--success); }
+.catalog-popup-icon .avatar-circle { width: 100%; height: 100%; }
+.catalog-popup-icon .skill-card-avatar { width: 100%; height: 100%; border-radius: 50%; background: transparent; color: inherit; font-size: var(--font-size-6); font-weight: var(--font-weight-semibold); }
+.catalog-popup .catalog-popup-content { gap: var(--space-5); }
+.catalog-popup .connector-popup-description { color: var(--text-body); font-size: var(--font-size-body); line-height: var(--line-height-body); }
+.catalog-popup .connector-popup-examples { gap: var(--space-3); }
+.catalog-popup .connector-popup-examples h3 { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-3); color: var(--text-heading); font-size: var(--font-size-body-lg); font-weight: var(--font-weight-semibold); }
+.catalog-popup .connector-popup-examples h3 small { color: var(--text-muted); font-size: var(--font-size-ui-sm); font-weight: var(--font-weight-regular); }
+.catalog-popup-does-card { padding: var(--space-5); border: 1px solid var(--line-subtle); border-radius: var(--radius-card); background: var(--surface-subtle); }
+.catalog-popup-does { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; padding: 0; list-style: none; color: var(--text-body); font-size: var(--font-size-body); line-height: var(--line-height-body); }
+.catalog-popup-does li { display: flex; align-items: center; gap: var(--space-3); }
+.catalog-popup-does-check { flex: 0 0 auto; width: var(--space-4); height: var(--space-4); color: var(--success); }
+.catalog-popup .connector-popup-example.ui-button { min-height: 48px; padding: var(--space-3) var(--space-5); border-color: transparent; background: var(--surface-subtle); color: var(--text-secondary); font-size: var(--font-size-ui); font-weight: var(--font-weight-regular); }
+.catalog-popup .connector-popup-example.ui-button:hover:not(:disabled) { background: var(--success-soft); color: var(--text-body); }
+.catalog-popup .connector-popup-example.ui-button .ui-button__icon { color: var(--text-muted); }
+.catalog-popup-tags, .catalog-popup-skills { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.catalog-popup-skill { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-3); border: 1px solid var(--line-default); border-radius: var(--radius-control); font-size: var(--font-size-meta); color: var(--text-body); }
+.catalog-popup-secondary { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+/* 「有更新」 on Agents / Skills page cards: same warning hue as the marketplace update chip. */
+.agent-card-chip.is-update, .skill-card-chip.is-update, .skill-card-chip.is-deps-warning {
+  display: inline-block; padding: 2px 8px; font-size: 11px; font-weight: 600; border-radius: 999px; white-space: nowrap; vertical-align: middle;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+  background: color-mix(in srgb, var(--warn) 8%, var(--surface));
+  color: var(--status-warning-text);
+}
+.catalog-popup-failed { color: var(--status-warning-text); }
+/* Platform group tail (S4-PV-001): first-load skeleton cards and the 「平台暂时没有更多」 note. */
+.catalog-skeleton-card { min-height: 132px; padding: var(--space-4); }
+.catalog-platform-note { margin: var(--space-3) 0 0; color: var(--text-muted); font-size: var(--font-size-caption); text-align: center; }
+/* Sign-in / offline notice above the platform group (S4-PV-001), on the reconcile-banner palette. */
+.catalog-home-banner { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin: 0 0 var(--space-3); }
+/* 我的技能 local-source bar (S4-PV-001): where 本机已有 skills come from + global folder switch. */
+.catalog-local-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin: 0 0 var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--line-subtle); border-radius: var(--radius-card); background: var(--surface-subtle); }
+.catalog-local-bar p { margin: 0; color: var(--text-secondary); font-size: var(--font-size-caption); line-height: var(--line-height-body); }
+.catalog-local-bar__switch { display: inline-flex; flex: none; align-items: center; gap: var(--space-2); color: var(--text-muted); font-size: var(--font-size-caption); }
+/* 已安装的智能体 / 技能 (S4-PV-001): one bordered list, row = avatar · text · 卸载 · switch. */
+/* 已安装的智能体 / 技能 (S4-PV-001, 2026-10-20 redesign): one toolbar row (crumb left; status
+   filter + search right), a summary line, and a full-width table. Uninstall sits in the row 「⋯」. */
+[data-catalog-view="installed"] .header-actions { order: -1; }
+/* 「我的贡献」由 hub-contributions.js 异步挂进技能页工具栏：只在「我的技能」里显示。用样式而不是挂载后再隐藏，
+   挂进来的那一刻就是对的，不会在首页闪一下（未渲染过子视图时没有该属性，同样隐藏）。 */
+#skills-grid-view:not([data-catalog-view="mine"]) [data-contribution-mine] { display: none; }
+.catalog-installed-crumb { display: flex; align-items: center; gap: var(--space-2); color: var(--text-secondary); font-size: var(--font-size-ui); white-space: nowrap; }
+.catalog-installed-crumb > .ui-button:first-child { margin-left: calc(-1 * var(--space-2)); }
+.catalog-installed-crumb strong { color: var(--text-heading); font-weight: var(--font-weight-semibold); }
+.catalog-installed-summary { margin: 0; color: var(--text-muted); font-size: var(--font-size-caption); line-height: var(--line-height-body); }
+.catalog-installed-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--space-4); }
+.catalog-installed-card { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: start; gap: var(--space-3); min-height: 96px; padding: var(--space-4); border: 1px solid var(--line-default); border-radius: var(--radius-card); background: var(--surface-card); cursor: pointer; transition: box-shadow .15s, border-color .15s; }
+.catalog-installed-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow-card-hover); }
+.catalog-installed-card__avatar { display: flex; }
+.catalog-installed-card__avatar .skill-card-avatar, .catalog-installed-card__avatar .agent-card-avatar { width: 40px; height: 40px; border-radius: 50%; }
+.catalog-installed-card__text { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.catalog-installed-card__name { overflow: hidden; color: var(--text-heading); font-size: var(--font-size-ui); font-weight: var(--font-weight-semibold); text-overflow: ellipsis; white-space: nowrap; }
+.catalog-installed-card__pills { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.catalog-installed-card__desc { display: -webkit-box; margin: 0; overflow: hidden; color: var(--text-muted); font-size: var(--font-size-meta); line-height: var(--line-height-body); -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.catalog-installed-card__actions { display: flex; align-items: center; gap: var(--space-1); }
+.catalog-installed-card.is-off .catalog-installed-card__name,
+.catalog-installed-card.is-off .catalog-installed-card__avatar { opacity: .5; }
+.catalog-row-menu { position: fixed; z-index: var(--z-popover); min-width: 140px; padding: var(--space-1); border: 1px solid var(--line-default); border-radius: var(--radius-control); background: var(--surface-raised); box-shadow: var(--shadow-card); }
+.catalog-row-menu-item { padding: 7px var(--space-3); border-radius: var(--radius-sm); color: var(--text-body); font-size: var(--font-size-ui-sm); cursor: pointer; }
+.catalog-row-menu-item:hover, .catalog-row-menu-item:focus-visible { background: var(--surface-subtle); outline: none; }
+.catalog-row-menu-item.is-danger { color: var(--color-danger); }
+.catalog-row-menu-item.is-danger:hover, .catalog-row-menu-item.is-danger:focus-visible { background: var(--color-danger-soft); }
 
 /* CONN-PV-002: token onboarding content inside the shared modal and form. */
 .connector-token-guidance { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); }

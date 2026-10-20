@@ -1,0 +1,121 @@
+/* 客户端暂无对应组件、本期原型新增的少量样式（ap-*）。只使用 tokens.css 的 token。
+   这些在 spec「组件对照表」中标为「新增，需设计评审」。其余界面全部来自客户端真实样式。 */
+
+.ap-toast {
+  position: fixed; right: var(--space-5); bottom: var(--space-5); z-index: var(--z-toast, 90); max-width: 360px;
+  padding: var(--space-2) var(--space-3); border: 1px solid var(--line-default); border-radius: var(--radius-control);
+  background: var(--surface-raised); color: var(--text-body); font-size: var(--font-size-meta);
+}
+.ap-note { margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line-default); border-radius: var(--radius-control); font-size: var(--font-size-meta); }
+.ap-note p { margin: 0; } .ap-note p + p { margin-top: 2px; }
+.ap-note--success { border-color: var(--status-success-text); background: var(--status-success-bg); color: var(--status-success-text); }
+.ap-note--info { background: var(--surface-subtle); color: var(--text-secondary); }
+.ap-kv { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: var(--space-2) var(--space-3); margin: 0; font-size: var(--font-size-meta); }
+.ap-kv dt { color: var(--text-muted); } .ap-kv dd { margin: 0; color: var(--text-body); overflow-wrap: anywhere; }
+.ap-steps { margin: var(--space-2) 0 0; padding-left: var(--space-5); font-size: var(--font-size-meta); line-height: 1.8; }
+.ap-group { margin: var(--space-3) 0 0; }
+.ap-group > h3 { margin: 0 0 var(--space-1); color: var(--text-muted); font-size: var(--font-size-caption); font-weight: 600; }
+.ap-deps { margin: 0; padding: 0; list-style: none; }
+.ap-dep { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px var(--space-3); padding: var(--space-2) 0; border-top: 1px solid var(--line-hairline); font-size: var(--font-size-meta); }
+.ap-dep:first-child { border-top: 0; }
+.ap-dep strong { color: var(--text-heading); }
+.ap-dep > small { grid-column: 1 / -1; color: var(--text-muted); font-size: var(--font-size-caption); }
+.ap-mono { font-family: var(--font-mono, ui-monospace, Menlo, monospace); }
+.ap-strip { margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.ap-strip li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-3); align-items: center; padding: var(--space-2) 0; border-top: 1px solid var(--line-hairline); font-size: var(--font-size-meta); }
+.ap-strip li:first-child { border-top: 0; }
+.ap-fine { margin: var(--space-2) 0 0; color: var(--text-muted); font-size: var(--font-size-caption); line-height: 1.6; }
+.ap-two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.ap-pre { margin: 0; padding: var(--space-3); border: 1px solid var(--line-default); border-radius: var(--radius-control); background: var(--surface-subtle); font: var(--font-size-meta)/1.7 var(--font-sans); white-space: pre-wrap; }
+.ap-meta { margin: 0; color: var(--text-muted); font-size: var(--font-size-caption); }
+.ap-modal-list { margin: var(--space-2) 0 0; padding: 0; list-style: none; }
+.ap-modal-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-2) 0; border-top: 1px solid var(--line-hairline); font-size: var(--font-size-meta); }
+.ap-modal-list li:first-child { border-top: 0; }
+.ap-section { border: 1px solid var(--line-default); border-radius: var(--radius-card); background: var(--surface-card); padding: var(--space-4) var(--space-5); margin-bottom: var(--space-3); }
+.ap-section h2 { margin: 0 0 var(--space-2); font-size: var(--font-size-title, 15px); color: var(--text-heading); }
+.ap-detail-wrap { padding: var(--space-4) var(--space-6) var(--space-7); display: flex; flex-direction: column; gap: var(--space-3); overflow: auto; min-height: 0; flex: 1; }
+.ap-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--space-4); align-items: start; }
+.ap-actions-col { display: grid; gap: var(--space-2); }
+.ap-actions-col .ui-button { width: 100%; justify-content: center; }
+.ap-type-switch { display: flex; align-items: center; gap: var(--space-3); }
+.ap-inline { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.ap-hidden-pane { display: none !important; }
+.ap-inert-pane { padding: var(--space-6); color: var(--text-muted); font-size: var(--font-size-meta); }
+.ap-avatar { display: inline-grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--avatar-bg, var(--color-brand-soft)); color: var(--avatar-fg, var(--color-accent)); font-size: 14px; font-weight: 600; }
+.ap-avatar svg { width: 17px; height: 17px; }
+.ap-main-col { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
+@media (max-width: 900px) { .ap-detail-grid, .ap-two { grid-template-columns: 1fr; } }
+
+.ap-detail-wrap > .ap-note, .ap-detail-wrap > .hubc-alert { align-self: stretch; }
+
+/* 真实 CSS 只抬高了 .agent-card-use；全卡片的 .agent-card-open 覆盖层会盖住「贡献」，这里同样抬高。真实实现需照此处理。 */
+.agent-card-actions > .agent-card-contribute { position: relative; z-index: 2; }
+
+
+/* ---- S4 新增（ap-*）：详情弹窗、示例行、创建表单、首页顶部提示。只使用 tokens.css 的 token。---- */
+.marketplace-card[data-act], .skill-card[data-act] { cursor: pointer; }
+.ap-top-note { display: flex; align-items: center; gap: var(--space-3); margin: 0 0 var(--space-3); }
+.ap-top-note > .hubc-alert { flex: 1; margin: 0; }
+.ap-list { margin: 0; padding-left: var(--space-5); color: var(--text-body); font-size: var(--font-size-meta); line-height: 1.8; }
+.ap-form { display: grid; gap: var(--space-3); }
+.ap-field { display: grid; gap: var(--space-1); }
+.ap-field > label { color: var(--text-heading); font-size: var(--font-size-meta); font-weight: 600; }
+.ap-error { margin: 0; color: var(--status-danger-text); font-size: var(--font-size-meta); }
+
+/* 管理页：只列用户从平台获取过的内容，每行有「卸载」和一个开关 */
+.ap-manage-list { margin: 0; padding: 0; list-style: none; border: 1px solid var(--line-default); border-radius: var(--radius-card); background: var(--surface-card); }
+.ap-manage-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line-hairline); cursor: pointer; }
+.ap-manage-row:first-child { border-top: 0; }
+.ap-manage-row:hover { background: var(--surface-subtle); }
+.ap-manage-row__text { display: grid; gap: 2px; min-width: 0; }
+.ap-manage-row__text strong { color: var(--text-heading); font-size: var(--font-size-meta); }
+.ap-manage-row__text span { color: var(--text-muted); font-size: var(--font-size-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ap-manage-row.is-off .ap-manage-row__text strong, .ap-manage-row.is-off .agent-card-avatar, .ap-manage-row.is-off .skill-card-avatar { opacity: .55; }
+.ap-manage-hint { margin: 0 0 var(--space-3); }
+
+
+/* ---- 详情弹窗：照客户端已有的「连接器使用弹窗」（connectors.js _openConnectorPopup，style.css .connector-popup-*）做 ----
+   uiModal lg（720）+ 共享遮罩居中；图标插在标题栏最前；正文一列；示例是整行 uiButton；操作在 footer。 */
+.ap-popup-icon { display: flex; flex: 0 0 var(--space-7); width: var(--space-7); height: var(--space-7); }
+.ap-popup-icon .avatar-circle, .ap-popup-icon .skill-card-avatar { width: 100%; height: 100%; }
+.ap-popup-icon .skill-card-avatar { font-size: var(--font-size-6); }
+.ap-popup-content { display: flex; flex-direction: column; gap: var(--space-4); }
+.ap-popup-content > p { margin: 0; color: var(--text-secondary); }
+.ap-popup-examples, .ap-popup-skills { display: flex; flex-direction: column; gap: var(--space-3); }
+.ap-popup-examples h3, .ap-popup-skills h3 { margin: 0; font-size: var(--font-size-title); font-weight: var(--font-weight-medium); }
+.ap-popup-examples h3 small { margin-left: var(--space-2); color: var(--text-muted); font-size: var(--font-size-caption); font-weight: var(--font-weight-regular); }
+.ap-popup-example.ui-button { width: 100%; height: auto; min-height: var(--control-height-lg); padding: var(--space-3); justify-content: space-between; text-align: left; white-space: normal; line-height: var(--line-height-body); }
+.ap-popup-example .ui-button__label { min-width: 0; overflow-wrap: anywhere; }
+.ap-popup-example .ui-button__icon { flex-shrink: 0; }
+.ap-popup-secondary { display: flex; gap: var(--space-2); margin-right: auto; }
+.ap-skillchip { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-3); border: 1px solid var(--line-default); border-radius: var(--radius-control); font-size: var(--font-size-meta); color: var(--text-body); }
+.ap-skillchip small { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--status-success-text); font-size: var(--font-size-caption); }
+.ap-skillchip small::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* 子页面（我的 / 管理）的返回行：放在 .agents-grid-header 外面——客户端在「智能体 / 技能 / 连接」页里会把那个页头收成 1 像素 */
+.ap-subpage-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin: 0 0 var(--space-3); }
+
+/* 技能详情的「能做什么」：带勾的浅底方框（设计稿「技能详情」） */
+.ap-checklist { margin: 0; padding: var(--space-3) var(--space-4); list-style: none; display: grid; gap: var(--space-2); border: 1px solid var(--line-default); border-radius: var(--radius-card); background: var(--surface-subtle); }
+.ap-checklist li { display: flex; align-items: flex-start; gap: var(--space-2); color: var(--text-body); font-size: var(--font-size-4); line-height: var(--line-height-body); }
+.ap-check { flex: none; width: 16px; height: 16px; margin-top: 3px; color: var(--status-success-text); }
+
+/* 说明行与标题之间不留大空隙；图标和标题块垂直对齐 */
+.ap-popup .ui-modal__header { align-items: center; }
+.ap-popup .ui-modal__description { margin-top: var(--space-1); }
+
+/* 平台卡片停用后变暗（客户端 marketplace-card 没有停用态；agent-card / skill-card 用各自的 is-disabled） */
+.ap-card-off .marketplace-card-header, .ap-card-off .marketplace-card-desc { opacity: .55; }
+
+/* 已安装页分组头；我的技能顶部的「本机已有」说明条 + 全局文件夹总开关 */
+.ap-manage-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+.ap-manage-master { display: inline-flex; flex: none; align-items: center; gap: var(--space-2); color: var(--text-muted); font-size: var(--font-size-caption); font-weight: var(--font-weight-regular); }
+.ap-mine-local { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin: 0 0 var(--space-3); padding: var(--space-2) var(--space-3); border: 1px solid var(--line-default); border-radius: var(--radius-control); background: var(--surface-subtle); color: var(--text-secondary); font-size: var(--font-size-caption); }
+
+/* 详情「会用到的技能」：被用户停用的依赖 */
+.ap-skillchip.is-off small { color: var(--status-danger-text); }
+
+/* 未登录提示：沿用客户端 .marketplace-reconcile-banner 的底色与字号，改成整行 + 右侧按钮 */
+.ap-banner { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin: 0 0 var(--space-3); }
+.ap-banner > span { min-width: 0; }
+.ap-banner .ui-button { flex: none; }

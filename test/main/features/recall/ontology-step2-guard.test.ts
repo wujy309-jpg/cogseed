@@ -44,6 +44,9 @@ describe('014 anti-drift（specs/014 T024）', () => {
       'cognition.ontology.snapshot',
       // Manual automation execution uses the existing authenticated IPC router.
       'autoTasks.runNow',
+      // 2026-10-19 S4 智能体 / 技能页（specs/009）：「我的技能」顶部的全局技能文件夹总开关。
+      'skills.getGlobalRootsEnabled',
+      'skills.setGlobalRootsEnabled',
       // 2026-09-29 个人本体 v2 重构：po.* 干净通道（JSON 单文档存储上的
       // 全 id 寻址业务 API，见 src/main/features/po/api.ts；旧通道保留）。
       'po.snapshot',

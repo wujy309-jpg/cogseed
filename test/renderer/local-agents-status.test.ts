@@ -50,8 +50,8 @@ describe('external-agent unavailable status copy', () => {
       expect(table['agent.cli_version_unknown']).toBeTruthy();
       expect(table['agent.cli_version_too_old']).toContain('{version}');
       expect(table['agent_modal.ext_cli_scanning']).toBeTruthy();
-      // 已连接标记（同 CLI 允许多实例，只打标不禁用）
-      expect(table['agent_modal.ext_cli_connected']).toBeTruthy();
+      // 已接入标记（同 CLI 允许多实例，只打标不禁用；2026-10-20 改为卡片副标题）
+      expect(table['agent_modal.ext_card_bound']).toContain('{n}');
     }
   });
 
@@ -59,6 +59,22 @@ describe('external-agent unavailable status copy', () => {
     const source = fs.readFileSync(path.join(rendererRoot, 'modules/local-agents.js'), 'utf8');
     expect(source).toContain('bound:');
     expect(source).toContain('res.bound');
-    expect(source).toMatch(/agent_modal\.ext_cli_connected/);
+    expect(source).toMatch(/agent_modal\.ext_card_bound/);
+  });
+
+  it('keeps the external-agent radio cards on one complete keyboard path', () => {
+    const source = fs.readFileSync(path.join(rendererRoot, 'modules/local-agents.js'), 'utf8');
+    const registry = fs.readFileSync(path.join(rendererRoot, '../../docs/renderer-structural-registry.md'), 'utf8');
+
+    expect(source).toContain('role="radio"');
+    expect(source).toContain('aria-label="${escapeHtml(ariaLabel)}"');
+    expect(source).toContain("card.type === focusableType ? '0' : '-1'");
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']) {
+      expect(source).toContain(`'${key}'`);
+    }
+    expect(source).toContain("if (e.key === 'Enter' || e.key === ' ')");
+    expect(source).toContain('cardElement(card.type)?.focus()');
+    expect(registry).toContain('`local-agents.js`');
+    expect(registry).toContain('roving tabindex');
   });
 });

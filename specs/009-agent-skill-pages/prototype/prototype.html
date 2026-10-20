@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CogSeed · 智能体 / 技能页面改版（原型）</title>
+  <!-- 外层只有评审用的导览条；里面的窗口是 app.html，结构与样式对照客户端真实页面。
+       导览条不是产品功能，真实客户端里没有它。必须在仓库检出内打开，或使用 prototype.standalone.html。 -->
+  <link rel="stylesheet" href="./prototype.css">
+  <script src="./prototype.js" defer></script>
+</head>
+<body>
+  <div class="proto-frame">
+    <header class="proto-nav" aria-label="原型功能导览（仅评审用，非产品功能）">
+      <div class="proto-nav__title"><strong>原型导览</strong><span>模拟数据 · 点击阶段直达</span></div>
+      <nav class="proto-nav__links" id="tour" aria-label="功能阶段"></nav>
+    </header>
+    <iframe class="proto-window" id="app" title="CogSeed 客户端原型" src="./app.html"></iframe>
+  </div>
+</body>
+</html>

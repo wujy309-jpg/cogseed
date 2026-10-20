@@ -505,22 +505,10 @@ function isMarketplaceOpen() {
   return document.getElementById('panel-marketplace')?.classList.contains('active') === true;
 }
 
-function openMarketplace(initialTab = 'agent', opts = {}) {
-  const panel = document.getElementById('panel-marketplace');
-  if (!panel) return;
-
-  // Idempotent; normally already started at module load so the Agents/Skills pages can show
-  // boot-time default-install progress before the user opens Marketplace.
-  _mpInitReconcileWatch();
-  // specs/010 FR-034 `[FROZEN]`：「用户打开目录页时」是一个检查触发时机（另两个是启动后
-  // 60 秒与在线期间每 6 小时，都在主进程）。这里只转达时机，不等结果、不显示进度、
-  // 失败不打断用户——频率闸门在主进程，重复开关面板不会变成重复请求。
-  _mpRequestServerCheck();
-
-  _mpReturnView = (typeof currentView === 'string' && currentView !== 'marketplace')
-    ? currentView : 'agents';
-
-  _mpState = {
+/** Fresh panel state. Shared by `openMarketplace` and `_mpEnsureState` (the Agents / Skills
+ *  pages install, update and uninstall platform content without opening this panel). */
+function _mpNewState(initialTab = 'agent') {
+  return {
     view: 'grid',
     appVersion: (_mpState && _mpState.appVersion) || '',
     tab: (initialTab === 'skill' || initialTab === 'oss') ? initialTab : 'agent',
@@ -560,6 +548,7 @@ function openMarketplace(initialTab = 'agent', opts = {}) {
     loading: true,
     searchBusy: false,
     installing: new Set(),
+    installFailed: new Map(),
     error: '',
     // Detail-view scratchpad
     detailKind: null,
@@ -573,6 +562,36 @@ function openMarketplace(initialTab = 'agent', opts = {}) {
     detailSkillLoadError: '',
     detailSkillSourceOpen: true,
   };
+}
+
+/** S4：智能体页 / 技能页直接安装、卸载平台内容时，市场面板可能从未打开过。
+ *  只补齐状态，不切换视图、不渲染面板。 */
+function _mpEnsureState() {
+  if (!_mpState) {
+    _mpState = _mpNewState('agent');
+    // Created by the Agents / Skills pages (S4) rather than the marketplace panel: pull the
+    // installed versions so 「有更新」 and installed state are right without opening the panel.
+    void _mpRefreshInstalledState();
+  }
+  return _mpState;
+}
+
+function openMarketplace(initialTab = 'agent', opts = {}) {
+  const panel = document.getElementById('panel-marketplace');
+  if (!panel) return;
+
+  // Idempotent; normally already started at module load so the Agents/Skills pages can show
+  // boot-time default-install progress before the user opens Marketplace.
+  _mpInitReconcileWatch();
+  // specs/010 FR-034 `[FROZEN]`：「用户打开目录页时」是一个检查触发时机（另两个是启动后
+  // 60 秒与在线期间每 6 小时，都在主进程）。这里只转达时机，不等结果、不显示进度、
+  // 失败不打断用户——频率闸门在主进程，重复开关面板不会变成重复请求。
+  _mpRequestServerCheck();
+
+  _mpReturnView = (typeof currentView === 'string' && currentView !== 'marketplace')
+    ? currentView : 'agents';
+
+  _mpState = _mpNewState(initialTab);
 
   if (!_mpBound) {
     _mpBindPanel(panel);
@@ -2310,11 +2329,13 @@ function _mpTrackInstallFailure(kind, item, err, surface = 'marketplace') {
   } catch (_) { /* telemetry must never affect install UX */ }
 }
 
-/** Before installing an Agent, show what will be installed together with it (product: dependencies
- *  are completed automatically and the user is told which). Only a *preview*: the install itself
- *  re-plans and re-checks, so a failed or unavailable preview never blocks it. Returns false when
- *  the user cancelled or a dependency makes the install impossible (already explained). */
-async function _mpConfirmAgentInstall(item) {
+/** Before installing an Agent, check whether a dependency makes the install impossible
+ *  (Hub-disabled, or an unsupported built-in capability) and explain why. Dependencies that can be
+ *  installed are completed silently — S4 removed the 「将同时安装」 confirmation (spec FR-012);
+ *  the agent detail still lists them. Only a *preview*: the install itself re-plans and re-checks,
+ *  so a failed or unavailable preview never blocks it. Returns false when blocked (already
+ *  explained). */
+async function _mpCheckAgentInstallable(item) {
   let plan = null;
   try {
     const r = await window.cogseed.invoke('marketplace.agentInstallPlan', {
@@ -2326,7 +2347,6 @@ async function _mpConfirmAgentInstall(item) {
   // The install path owns the "needs a newer CogSeed" prompt; do not duplicate it here.
   if (!plan || plan.appUpdateRequired) return true;
 
-  const named = (entry) => escapeHtml(entry.name || entry.id);
   const blocked = plan.items.filter((entry) => entry.action === 'blocked_disabled' || entry.action === 'blocked_builtin_unsupported');
   if (blocked.length) {
     const lines = blocked.map((entry) => `• ${entry.name || entry.id}: ${entry.action === 'blocked_disabled'
@@ -2334,41 +2354,32 @@ async function _mpConfirmAgentInstall(item) {
     await uiAlert(`${t('marketplace.agent_plan_blocked_intro')}\n\n${lines}`);
     return false;
   }
-  const alongside = plan.items.filter((entry) => entry.action === 'install' || entry.action === 'bundled');
-  if (!alongside.length) return true;
-  const reused = plan.items.filter((entry) => entry.action === 'reuse');
-  const row = (entry, noteKey) => `<li><strong>${named(entry)}</strong> <span class="ui-modal__hint">${escapeHtml(t(noteKey))}</span></li>`;
-  const list = (entries, noteFor) => (entries.length ? `<ul class="ui-modal__list">${entries.map((entry) => row(entry, noteFor(entry))).join('')}</ul>` : '');
-  const bodyHtml = `<p>${escapeHtml(t('marketplace.agent_plan_intro').replace('{name}', item.name || item.id))}</p>`
-    + list(alongside, (entry) => (entry.action === 'bundled' ? 'marketplace.agent_plan_bundled' : 'marketplace.agent_plan_hub'))
-    + (reused.length ? `<p>${escapeHtml(t('marketplace.agent_plan_reuse_intro'))}</p>${list(reused, () => 'marketplace.agent_plan_reuse')}` : '')
-    + `<p>${escapeHtml(t('marketplace.agent_plan_safety'))}</p>`;
-  const result = await uiModal({
-    title: t('marketplace.agent_plan_title'),
-    bodyHtml,
-    closeLabel: t('common.close'),
-    actions: [
-      { id: 'cancel', label: t('common.cancel'), role: 'secondary' },
-      { id: 'install', label: t('marketplace.agent_plan_confirm'), role: 'primary' },
-    ],
-  });
-  return result && result.value === 'install';
+  return true;
 }
 
-async function _mpInstall(kind, id, itemOverride = null) {
+/** Install / update one Hub item. Resolves true when it ended up installed.
+ *  `opts.quiet` (S4 Agents / Skills pages): a plain failure becomes a toast and is remembered in
+ *  `_mpState.installFailed` so the card can offer 「重试」; security and quality dialogs still show. */
+async function _mpInstall(kind, id, itemOverride = null, opts = {}) {
   const item = itemOverride || (kind === 'agent' ? _mpState.agents : _mpState.skills).find((x) => x.id === id);
-  if (!item) return;
+  if (!item) return false;
   // 与卡片同一判据，不再限定 kind：Agent 的停用同样拦在发起安装之前（主进程另有一道，
   // 两道都在，任何一道被绕过都还有后手）。
   if (HubContentStatus.isHubContentDisabled(item)) {
     uiAlert(t(kind === 'agent' ? 'marketplace.agent_disabled_hint' : 'marketplace.disabled_hint'));
-    return;
+    return false;
   }
   const key = `${kind}:${id}`;
-  if (_mpState.installing.has(key)) return;
-  if (kind === 'agent' && !await _mpConfirmAgentInstall(item)) return;
+  if (_mpState.installing.has(key)) return false;
+  if (!_mpState.installFailed) _mpState.installFailed = new Map();
   _mpState.installing.add(key);
+  _mpState.installFailed.delete(key);
   _mpRender();
+  if (kind === 'agent' && !await _mpCheckAgentInstallable(item)) {
+    _mpState.installing.delete(key);
+    _mpRender();
+    return false;
+  }
   const invokeInstall = async (acceptSecurityRisk = false) => {
     const channel = kind === 'agent' ? 'marketplace.installAgent' : 'marketplace.installSkill';
     const r = await window.cogseed.invoke(channel, {
@@ -2384,7 +2395,15 @@ async function _mpInstall(kind, id, itemOverride = null) {
     if (!r || r.ok === false) throw _mpInstallErrorFromResponse(r);
     return r;
   };
+  let installed = false;
+  const failed = (err) => {
+    const text = _mpInstallFailedText(kind, item, err);
+    _mpState.installFailed.set(key, text);
+    if (opts.quiet && typeof uiToast === 'function') uiToast(text, { variant: 'error', timeoutMs: 8000 });
+    else uiAlert(text);
+  };
   const markInstalled = async () => {
+    installed = true;
     _mpMarkInstalled(kind, item);
     _mpPersistInstalled();
     if (typeof loadAgents === 'function' && kind === 'agent') await loadAgents(true);
@@ -2415,7 +2434,7 @@ async function _mpInstall(kind, id, itemOverride = null) {
     // its own structured payload rather than a QualityReport.
     if (err && (err.securityBlocked || err.securityUnavailable)) {
       const accepted = await _mpShowSecurityCard(err.marketplaceName || item.name || id, err);
-      if (!accepted) return;
+      if (!accepted) return false;
       // Retry once, carrying the user's decision. A second refusal is final: it
       // means the verdict changed or was never waivable, and looping the dialog
       // would train the user to click through it.
@@ -2423,9 +2442,9 @@ async function _mpInstall(kind, id, itemOverride = null) {
         await invokeInstall(true);
         await markInstalled();
       } catch (retryErr) {
-        uiAlert(_mpInstallFailedText(kind, item, retryErr));
+        failed(retryErr);
       }
-      return;
+      return installed;
     }
     // Quality validator rejection → show the structured violation list
     // instead of the generic install-failed alert. Falls back to alert if
@@ -2455,21 +2474,22 @@ async function _mpInstall(kind, id, itemOverride = null) {
               await invokeInstall(true);
               await markInstalled();
             } catch (retryErr) {
-              uiAlert(_mpInstallFailedText(kind, item, retryErr));
+              failed(retryErr);
             }
           }
         }
       } else {
-        uiAlert(_mpInstallFailedText(kind, item, err));
+        failed(err);
       }
     } else {
-      uiAlert(_mpInstallFailedText(kind, item, err));
+      failed(err);
     }
   } finally {
     _mpState.installing.delete(key);
     _mpRender();
     if (_mpState.view === 'detail') _mpRenderDetail();
   }
+  return installed;
 }
 
 async function _mpInstallFromDetail() {
@@ -2484,7 +2504,8 @@ async function _mpInstallFromDetail() {
 async function _mpUninstall(kind, id) {
   if (!_mpState.uninstalling) _mpState.uninstalling = new Set();
   const key = `${kind}:${id}`;
-  if (_mpState.installing.has(key)) return;
+  if (_mpState.installing.has(key)) return false;
+  let removed = false;
   _mpState.installing.add(key);
   _mpState.uninstalling.add(key);
   _mpRender();
@@ -2499,6 +2520,7 @@ async function _mpUninstall(kind, id) {
     _mpPersistInstalled();
     if (typeof loadAgents === 'function' && kind === 'agent') await loadAgents(true);
     if (typeof loadSkills === 'function' && kind === 'skill') await loadSkills(true);
+    removed = true;
     // Success: button flips back to "Install" — no toast needed. (Failures still alert.)
   } catch (err) {
     const msg = _mpUserErrorMessage(err, 'marketplace.action_failed_retry_later');
@@ -2509,6 +2531,7 @@ async function _mpUninstall(kind, id) {
     _mpRender();
     if (_mpState.view === 'detail') _mpRenderDetail();
   }
+  return removed;
 }
 
 function _mpMarkInstalled(kind, item) {

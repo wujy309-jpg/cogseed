@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { dependencyStateFromPlan } from '../../../src/main/features/agent_dependency_state';
+import { dependencyStateFromPlan, withUserDisabledDependencies } from '../../../src/main/features/agent_dependency_state';
 import { planAgentDependencies, type LocalSkillState } from '../../../src/main/features/marketplace_agent_deps';
 
 const none = new Set<string>();
@@ -48,5 +48,41 @@ describe('dependencyStateFromPlan', () => {
   it('随包私有 Skill 即使本机有同名且被停用的 Skill，也不会被误判停用', () => {
     expect(stateOf(['invoice-ocr'], ['invoice-ocr'], { 'invoice-ocr': { present: true, disabled: true } }))
       .toEqual({ status: 'ready', ids: [] });
+  });
+});
+
+describe('withUserDisabledDependencies（S4：用户停用的依赖也阻断，FR-027）', () => {
+  const ready = { status: 'ready' as const, ids: [] as string[] };
+  // 返回被停用技能的 id（不是布尔），以便 `reasons` 始终按真实 id 记。
+  const disabled = (ids: string[]) => (ref: string) => (ids.includes(ref) ? ref : '');
+
+  it('依赖被用户停用 → deps_blocked，原因 user_disabled', () => {
+    expect(withUserDisabledDependencies(ready, ['a', 'b'], new Set(), disabled(['b'])))
+      .toEqual({ status: 'deps_blocked', ids: ['b'], reasons: { b: 'user_disabled' } });
+  });
+
+  it('都正常 → 原样返回', () => {
+    expect(withUserDisabledDependencies(ready, ['a'], new Set(), disabled([]))).toBe(ready);
+  });
+
+  it('Hub 停用的保留在前，不被标成 user_disabled', () => {
+    const hub = { status: 'deps_blocked' as const, ids: ['h'] };
+    expect(withUserDisabledDependencies(hub, ['h', 'u'], new Set(), disabled(['u'])))
+      .toEqual({ status: 'deps_blocked', ids: ['h', 'u'], reasons: { u: 'user_disabled' } });
+  });
+
+  it('缺失依赖 + 用户停用 → 停用优先', () => {
+    const missing = { status: 'deps_missing' as const, ids: ['m'] };
+    expect(withUserDisabledDependencies(missing, ['m', 'u'], new Set(), disabled(['u'])).status).toBe('deps_blocked');
+  });
+
+  it('builtin: 引用与随包私有技能不受用户停用名单影响', () => {
+    expect(withUserDisabledDependencies(ready, ['builtin:coding', 'priv'], new Set(['priv']), (ref) => ref)).toBe(ready);
+  });
+
+  it('skill_list 写的是技能名：按解析出的 id 记，同一技能名和 id 都写了也只算一次', () => {
+    const byName: Record<string, string> = { 发票抽取: 'invoice-extract', 'invoice-extract': 'invoice-extract' };
+    expect(withUserDisabledDependencies(ready, ['发票抽取', 'invoice-extract', 'other'], new Set(), (ref) => byName[ref] || ''))
+      .toEqual({ status: 'deps_blocked', ids: ['invoice-extract'], reasons: { 'invoice-extract': 'user_disabled' } });
   });
 });

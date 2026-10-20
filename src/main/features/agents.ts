@@ -86,7 +86,7 @@ import {
 } from './marketplace_biz';
 import { normalizeInstallVersion } from './marketplace_installs';
 import { app as electronApp } from 'electron';
-import { readAgentDependencyState, type AgentDependencyState } from './agent_dependency_state';
+import { readAgentDependencyState, withUserDisabledDependencies, type AgentDependencyState } from './agent_dependency_state';
 import { isKnownBuiltinRef, parseBuiltinRef } from './agent_builtin_capabilities';
 import { activeUpdateFailure, readAgentUpdateFailures, type AgentUpdateFailure } from './agent_update_failures';
 import { NAME_DISPLAY_MAX_UNITS, nameDisplayWidth } from '../util/name-limit';
@@ -1754,19 +1754,32 @@ export async function listAgentsForUser(userId: string): Promise<Agent[]> {
   // Overlay per-user enabled overrides outside the cache so toggles take
   // effect immediately without busting the disk-spec cache. Cheap — one
   // small JSON file read per call.
-  const { agents: disabledAgentIds } = readDisabledSets(userId);
+  const { agents: disabledAgentIds, skills: disabledSkillIds } = readDisabledSets(userId);
   const enriched = await _enrichAgentSpecs(userId, specs);
   const uid = userId;
   const updateFailures = readAgentUpdateFailures(uid);
+  // skill_list 里可能是 id，也可能是旧写法的技能名（运行时两种都认）：停用判定按同一规则解析成 id。
+  // 只在有停用技能时才取技能清单，常见情况不多一次读盘。
+  const refSpecs = disabledSkillIds.size ? await _skillSpecsForDisplay(uid) : [];
+  const disabledIdOf = (ref: string): string => {
+    if (disabledSkillIds.has(ref)) return ref;
+    if (!refSpecs.length) return '';
+    const [id] = resolveSkillAllowlistRefs(refSpecs, [ref]).ids;
+    return id && disabledSkillIds.has(id) ? id : '';
+  };
   return enriched.map((agent) => ({
     ...agent,
     enabled: _effectiveEnabled(agent, disabledAgentIds),
     ...(_hubDisabled(agent) ? { hub_disabled: true } : {}),
-    // Installed marketplace agents only: custom agents reference the user's own skills and are not
-    // governed by Hub status. Derived fresh each listing so a Hub disable shows up at once.
+    // Installed marketplace agents get the full plan (Hub status + local presence). Custom agents
+    // reference the user's own skills and are not governed by Hub status, but a skill the user turned
+    // off still blocks them (S4 FR-027). Derived fresh each listing so either change shows up at once.
     ...(agent.source === 'marketplace' && agent.skill_list?.length
-      ? { dependency_state: readAgentDependencyState(uid, agent.agent_id, agent.skill_list, _appVersionForDeps()) }
-      : {}),
+      ? { dependency_state: readAgentDependencyState(uid, agent.agent_id, agent.skill_list, _appVersionForDeps(), disabledIdOf) }
+      : agent.skill_list?.length && disabledSkillIds.size
+        ? ((state) => (state.status === 'ready' ? {} : { dependency_state: state }))(
+          withUserDisabledDependencies({ status: 'ready', ids: [] }, agent.skill_list, new Set(), disabledIdOf))
+        : {}),
     ...(agent.source === 'marketplace'
       ? ((f) => (f ? { update_failure: f } : {}))(activeUpdateFailure(updateFailures, agent.agent_id, agent.version))
       : {}),

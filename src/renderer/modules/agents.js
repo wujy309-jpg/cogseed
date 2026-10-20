@@ -16,6 +16,12 @@ function _agentsTrackError(action, data) {
 }
 
 let _agentsCache = null;
+// S4（specs/009-agent-skill-pages）：智能体页的子视图（home = 首页三组，mine = 我的智能体）。
+let _agentsSubView = 'home';
+// 「已安装的智能体」状态筛选：'' 全部 / 'update' 有更新 / 'off' 已停用。
+let _agentsInstalledFilter = '';
+let _agentsCatalogWired = false;
+let _agentsSearchComposing = false;
 // Startup holds a deliberately small identity cache for chat mentions and
 // avatars. The Agents tab upgrades it to the complete listing on first entry.
 let _agentsCacheIsSummary = false;
@@ -115,15 +121,33 @@ async function _loadExternalCliProviders() {
   return _externalCliProviders;
 }
 
+/** 「外接」tab 字段在选卡片之前置灰但不隐藏，弹窗高度不随选择变化（2026-10-20）。 */
+function _setExternalFieldsIdle(idle) {
+  const fields = document.getElementById('agent-ext-fields');
+  if (!fields) return;
+  fields.classList.toggle('is-idle', idle);
+  for (const el of fields.querySelectorAll('input, textarea')) el.disabled = idle;
+  if (idle) _renderExternalCliProviderSelect(null);
+}
+
 function _renderExternalCliProviderSelect(cli, selectedId = '') {
   const row = document.getElementById('agent-ext-provider-row');
   const mount = document.getElementById('agent-modal-ext-provider-select');
   if (!row || !mount) return;
   const providers = filterCliProviders(cli, _externalCliProviders);
   const compatibleSelected = normalizeCliProviderSelection(cli, selectedId, _externalCliProviders);
-  row.hidden = !(cli === 'claude' || cli === 'codex');
-  if (row.hidden) {
-    _externalCliProviderSelect?.setValue('');
+  // 只有 Claude Code / Codex 能选供应商；其他的（或还没选）这一行照常占位、置灰并说明，
+  // 不显示 / 隐藏，免得弹窗高度跳动。
+  const supported = cli === 'claude' || cli === 'codex';
+  if (!supported) {
+    const label = cli ? t('agent_modal.ext_provider_na') : t('agent_modal.ext_provider_none');
+    if (!_externalCliProviderSelect) {
+      _externalCliProviderSelect = _aiSelectMount(mount, { options: [{ value: '', label }], value: '', placeholder: label });
+    } else {
+      _externalCliProviderSelect.setOptions([{ value: '', label }], { value: '' });
+    }
+    const trigger = mount.querySelector('.ai-select-trigger');
+    if (trigger) trigger.disabled = true;
     return;
   }
   const options = [
@@ -142,6 +166,8 @@ function _renderExternalCliProviderSelect(cli, selectedId = '') {
   } else {
     _externalCliProviderSelect.setOptions(options, { value: compatibleSelected });
   }
+  const freshTrigger = mount.querySelector('.ai-select-trigger');
+  if (freshTrigger) freshTrigger.disabled = false;
 }
 
 function _getExternalCliProviderValue(cli) {
@@ -737,7 +763,15 @@ function _ensureAgentsSearchControl() {
   }
   if (!input || input.dataset.agentsSearchBound === 'true') return;
   input.dataset.agentsSearchBound = 'true';
-  input.addEventListener('input', () => {
+  input.addEventListener('compositionstart', () => { _agentsSearchComposing = true; });
+  input.addEventListener('compositionend', () => {
+    _agentsSearchComposing = false;
+    _agentsSearchQuery = input.value || '';
+    if (_agentsCache) renderAgentsList(_agentsCache);
+  });
+  input.addEventListener('input', (e) => {
+    // 输入法合成过程中不过滤（spec FR-029），合成结束由 compositionend 统一触发。
+    if (_agentsSearchComposing || (e && e.isComposing)) return;
     _agentsSearchQuery = input.value || '';
     if (_agentsCache) renderAgentsList(_agentsCache);
   });
@@ -766,19 +800,346 @@ function _renderAgentsEmptyState(emptyEl, noMatch) {
   });
 }
 
+
+// ─── S4：首页 / 我的 子视图、平台目录与统一详情弹窗 ───────────────────────
+// 首页 = 主智能体 / 外接智能体 / 平台（本机已安装的平台内容在前，目录里还没装的在后，
+// 不标来源）；我的 = 只放用户自建的。平台目录与弹窗在 `marketplace` 懒加载包的
+// catalog.js（registry S4-PV-001）。
+
+function _agentsEnsureCatalog() {
+  if (_agentsCatalogWired) return;
+  const load = typeof window.loadRendererFeature === 'function' ? window.loadRendererFeature : null;
+  if (!load) return;
+  _agentsCatalogWired = true;
+  Promise.resolve(load('marketplace')).then(() => {
+    if (typeof catalogOnChange === 'function') {
+      catalogOnChange((kind) => { if (kind === 'agent' && _agentsCache) renderAgentsList(_agentsCache); });
+    }
+    if (typeof catalogLoad === 'function') catalogLoad('agent');
+  }).catch((err) => {
+    _agentsCatalogWired = false;
+    _agentsLog.warn('agent catalog load failed', { error: (err && err.message) || String(err) });
+  });
+}
+
+function _agentsCatalogPending(platformInstalled) {
+  if (typeof catalogSplitPlatform !== 'function' || typeof catalogRows !== 'function') return [];
+  // 未登录：平台组只显示已安装的（spec FR-023）。
+  if (typeof catalogStatus === 'function' && catalogStatus('agent').signedOut) return [];
+  return catalogSplitPlatform(platformInstalled, catalogRows('agent'), (a) => a && a.agent_id).notInstalled;
+}
+
+function _isAgentPlatformInstalled(a) {
+  return !!a && !_isCommanderAgent(a) && !_isExternalCliAgent(a) && _agentSource(a.source) === 'marketplace';
+}
+
+/** 已安装的智能体（spec FR-014～016）：只列从平台安装的（含原随包内容）。
+ *  一行头部（返回 · 状态筛选 · 搜索）、整宽列表、需要处理的排前面，卸载收在「⋯」里。 */
+function _agentInstalledRow(a, lang) {
+  const depState = a.dependency_state && typeof a.dependency_state === 'object' ? a.dependency_state : null;
+  const updateRow = _agentCatalogUpdateRow(a);
+  const depsBlocked = !!depState && depState.status === 'deps_blocked';
+  const pills = [];
+  if (updateRow) pills.push({ label: t('catalog.update_chip'), tone: 'attention' });
+  if (a.hub_disabled) pills.push({ label: t('agents.hub_disabled_chip'), tone: 'attention' });
+  if (depsBlocked) pills.push({ label: t('agents.deps_blocked_chip'), tone: 'attention' });
+  return {
+    id: a.agent_id,
+    name: a.name || a.agent_id,
+    desc: _agentSummary(a, lang),
+    enabled: a.enabled !== false,
+    updateVersion: updateRow ? String(updateRow.version || '') || '?' : '',
+    blocked: !!a.hub_disabled || depsBlocked,
+    pills,
+    avatarHtml: renderAvatarHtml(a.icon, a.color, { size: 32, seed: a.agent_id, extraClass: 'agent-card-avatar' }),
+  };
+}
+
+function _renderAgentsInstalledView(list, { gridEl, emptyEl, chipsHost }) {
+  gridEl.classList.add('is-sectioned');
+  const lang = getLang();
+  const ready = typeof catalogInstalledGridHtml === 'function';
+  const allRows = ready ? catalogInstalledSort(list.map((a) => _agentInstalledRow(a, lang))) : [];
+  const summary = ready ? catalogInstalledSummary(allRows) : { total: list.length, off: 0, update: 0 };
+  if (_agentsInstalledFilter && !summary[_agentsInstalledFilter]) _agentsInstalledFilter = '';
+  if (chipsHost) chipsHost.innerHTML = ready ? catalogInstalledCrumbHtml('agent', { 'data-agents-subview': 'home' }) : '';
+  const host = document.getElementById('agents-catalog-actions');
+  if (host) host.innerHTML = ready && summary.total ? catalogInstalledFilterHtml(summary, _agentsInstalledFilter) : '';
+  if (typeof hydrateUiIcons === 'function') { if (chipsHost) hydrateUiIcons(chipsHost); }
+  host?.querySelectorAll('[data-catalog-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      _agentsInstalledFilter = btn.dataset.catalogFilter || '';
+      if (_agentsCache) renderAgentsList(_agentsCache);
+    });
+  });
+  const query = _agentsSearchQuery.trim().toLocaleLowerCase();
+  const rows = (ready ? catalogInstalledFilter(allRows, _agentsInstalledFilter) : [])
+    .filter((r) => !query || `${r.name} ${r.desc}`.toLocaleLowerCase().includes(query));
+  if (!rows.length) {
+    gridEl.innerHTML = summary.total && ready ? catalogInstalledSummaryHtml('agent', summary) : '';
+    if (emptyEl) {
+      const narrowed = Boolean(query) || Boolean(_agentsInstalledFilter);
+      emptyEl.innerHTML = typeof window.uiEmptyState === 'function'
+        ? window.uiEmptyState(narrowed
+          ? { kind: 'quiet', title: t('catalog.installed_no_match') }
+          : { kind: 'explained', title: t('catalog.installed_empty_agents'), hint: t('catalog.installed_empty_hint_agents') })
+        : '';
+      emptyEl.style.display = '';
+    }
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+  gridEl.innerHTML = catalogInstalledSummaryHtml('agent', summary) + catalogInstalledGridHtml(rows, 'agent');
+  if (typeof hydrateUiIcons === 'function') hydrateUiIcons(gridEl);
+  for (const rowEl of gridEl.querySelectorAll('[data-catalog-row]')) {
+    const id = rowEl.dataset.catalogRow;
+    const row = rows.find((r) => r.id === id);
+    rowEl.addEventListener('click', (e) => {
+      const actionEl = e.target.closest('[data-catalog-row-action]');
+      const action = actionEl && actionEl.dataset.catalogRowAction;
+      if (action === 'toggle') {
+        e.stopPropagation();
+        void _flipAgentEnabled(id, !(row && row.enabled));
+        return;
+      }
+      if (action === 'more') {
+        e.stopPropagation();
+        const items = [{ id: 'detail', label: t('catalog.menu_detail') }];
+        if (row && row.updateVersion) items.push({ id: 'update', label: t('catalog.menu_update', { version: row.updateVersion }) });
+        items.push({ id: 'uninstall', label: t('catalog.uninstall'), danger: true });
+        catalogOpenRowMenu(actionEl, items, (pick) => {
+          if (pick === 'detail') _openAgentCatalogPopup(id);
+          else if (pick === 'update') {
+            const a = (_agentsCache || []).find((x) => x && x.agent_id === id);
+            const updateRow = a ? _agentCatalogUpdateRow(a) : null;
+            if (updateRow) void _installCatalogAgent(updateRow, { update: true });
+          } else if (pick === 'uninstall') void catalogUninstall('agent', id);
+        });
+        return;
+      }
+      _openAgentCatalogPopup(id);
+    });
+  }
+}
+
+function _isAgentCustomOwned(a) {
+  return !!a && !_isCommanderAgent(a) && !_isExternalCliAgent(a) && _agentSource(a.source) !== 'marketplace';
+}
+
+function _setAgentsSubView(view) {
+  _agentsSubView = view === 'mine' || view === 'installed' ? view : 'home';
+  _agentsInstalledFilter = '';
+  if (typeof catalogCloseRowMenu === 'function') catalogCloseRowMenu();
+  _agentsSearchQuery = '';
+  _agentsActiveCategory = '';
+  const input = document.getElementById('agents-search-input');
+  if (input) input.value = '';
+  if (_agentsCache) renderAgentsList(_agentsCache);
+}
+
+function _renderAgentsChrome(customCount, installedCount) {
+  const mine = _agentsSubView === 'mine';
+  const installed = _agentsSubView === 'installed';
+  for (const id of ['create-agent-btn', 'agents-mine-btn']) {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !mine;
+  }
+  const more = document.getElementById('agents-more-btn');
+  if (more) more.hidden = true;
+  const gridView = document.getElementById('agents-grid-view');
+  if (gridView) gridView.dataset.catalogView = _agentsSubView;
+  const host = document.getElementById('agents-catalog-actions');
+  if (host && typeof uiButton === 'function') {
+    // 已安装页：这里由 `_renderAgentsInstalledView` 放状态筛选。
+    host.innerHTML = _agentsSubView !== 'home' ? '' : uiButton({
+      label: t('catalog.my_agents', { n: customCount }), role: 'secondary', size: 'sm',
+      attrs: { 'data-agents-subview': 'mine' },
+    }) + uiButton({
+      label: t('catalog.installed_agents', { n: installedCount }), role: 'secondary', size: 'sm',
+      attrs: { 'data-agents-subview': 'installed' },
+    });
+  }
+  // 「我的」用独立返回行；已安装页的返回放进工具栏同一行（一行头部）。
+  const back = document.getElementById('agents-subview-back');
+  if (back && typeof uiButton === 'function') {
+    back.hidden = !mine;
+    back.innerHTML = mine ? `${uiButton({
+      label: t('catalog.back_agents'), role: 'ghost', size: 'sm', icon: 'chevron-left',
+      attrs: { 'data-agents-subview': 'home' },
+    })}<span class="catalog-subview-sep" aria-hidden="true">/</span><span>${escapeHtml(t('catalog.mine_agents_title'))}</span>` : '';
+    if (typeof hydrateUiIcons === 'function') hydrateUiIcons(back);
+  }
+  if (installed && gridView) gridView.dataset.catalogView = 'installed';
+  const view = document.getElementById('agents-grid-view');
+  if (view && view.dataset.catalogSubviewBound !== 'true') {
+    view.dataset.catalogSubviewBound = 'true';
+    view.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-agents-subview]');
+      if (!btn) return;
+      e.preventDefault();
+      _setAgentsSubView(btn.dataset.agentsSubview);
+    });
+  }
+}
+
+function _catalogAgentCardHtml(row, lang) {
+  const installing = typeof catalogIsInstalling === 'function' && catalogIsInstalling('agent', row.id);
+  const failed = !installing && typeof catalogInstallFailure === 'function' && catalogInstallFailure('agent', row.id);
+  const appUpdate = typeof _mpItemAppUpdateRequired === 'function' && _mpItemAppUpdateRequired(row);
+  const name = row.name || row.id;
+  const desc = String(pickDesc(row, lang) || '').trim();
+  const avatarHtml = renderAvatarHtml(row.icon, row.color, { size: 32, seed: row.id, extraClass: 'agent-card-avatar' });
+  const metaHtml = _agentCardMetaHtml(row, lang);
+  const installBtn = uiButton({
+    label: installing ? t('catalog.installing') : appUpdate ? t('marketplace.state_app_update_required') : failed ? t('catalog.retry') : t('catalog.install'),
+    role: 'primary', size: 'sm', className: 'agent-card-use', loading: installing, disabled: installing || appUpdate,
+    attrs: { 'data-catalog-install': true },
+  });
+  const failedChip = failed
+    ? `<span class="agent-card-chip is-deps-warning" title="${escapeHtml(failed)}">${escapeHtml(t('catalog.install_failed_chip'))}</span>`
+    : '';
+  return `
+      <div class="agent-card ui-resource-card" data-catalog-id="${escapeHtml(row.id)}">
+        <button type="button" class="agent-card-open" data-agent-open aria-label="${escapeHtml(name)}"></button>
+        <div class="agent-card-header">
+          ${avatarHtml}
+          <div class="agent-card-title">
+            <span class="agent-card-name">${escapeHtml(name)}</span>
+            ${metaHtml ? `<span class="agent-card-meta">${metaHtml}</span>` : ''}
+          </div>
+        </div>
+        <div class="agent-card-desc${desc ? '' : ' is-empty'}">${escapeHtml(desc || t('agents.placeholder_unset'))}</div>
+        <div class="agent-card-actions">${failedChip}${installBtn}</div>
+      </div>
+    `;
+}
+
+/** 已安装平台智能体在 Hub 上有新版本时返回目录行（卡片「有更新」、详情「更新」）。 */
+function _agentCatalogUpdateRow(a) {
+  if (!a || _agentSource(a.source) !== 'marketplace' || typeof catalogUpdateRow !== 'function') return null;
+  return catalogUpdateRow('agent', a.agent_id);
+}
+
+function _agentCatalogOrigin(a) {
+  if (_isCommanderAgent(a)) return 'commander';
+  if (_isExternalCliAgent(a)) return 'external';
+  return _agentSource(a && a.source) === 'marketplace' ? 'platform' : 'own';
+}
+
+async function _installCatalogAgent(row, opts = {}) {
+  if (!row || typeof catalogInstall !== 'function') return false;
+  const ok = await catalogInstall('agent', row);
+  if (ok && typeof uiToast === 'function') {
+    uiToast(t(opts.update ? 'catalog.updated_toast' : 'catalog.installed_toast', { name: row.name || row.id }), { variant: 'success' });
+  }
+  return ok;
+}
+
+/** 统一详情弹窗（spec FR-006/007）：installed agent 传 agentId；目录里还没装的传 catalogRow。 */
+function _openAgentCatalogPopup(agentId, catalogRow) {
+  const a = agentId
+    ? ((_agentsCache || []).find((x) => x && x.agent_id === agentId) || (_isCommanderAgent(agentId) ? _buildCommanderAgent() : null))
+    : null;
+  if (typeof openCatalogPopup !== 'function') {
+    if (a) _showAgentsDetailView(a.agent_id);
+    return;
+  }
+  const src = a || catalogRow;
+  if (!src) return;
+  const lang = getLang();
+  const id = String(src.agent_id || src.id || '');
+  const installed = !!a;
+  const origin = a ? _agentCatalogOrigin(a) : 'platform';
+  const catLabel = _resolveCategoryLabel(src.category, lang) || _generalCategoryLabel(lang);
+  const version = src.version ? t('marketplace.version').replace('{version}', String(src.version)) : '';
+  // 平台内容不标来源（spec FR-002）：只写分类与版本，与参考稿一致。
+  const metaKey = origin === 'external' ? 'catalog.meta_external' : origin === 'own' ? 'catalog.meta_own' : '';
+  const meta = origin === 'commander'
+    ? t('catalog.meta_commander')
+    : [metaKey ? t(metaKey, { category: catLabel }) : catLabel, origin === 'platform' ? version : ''].filter(Boolean).join(' · ');
+  const skillIds = a ? _agentSkillIds(a) : (Array.isArray(src.skill_list) ? src.skill_list.map(normalizeDisplayText).filter(Boolean) : []);
+  const depState = a && a.dependency_state && typeof a.dependency_state === 'object' ? a.dependency_state : null;
+  const reasons = depState && depState.reasons && typeof depState.reasons === 'object' ? depState.reasons : {};
+  const userOffIds = Object.keys(reasons).filter((sid) => reasons[sid] === 'user_disabled');
+  const userOffNames = userOffIds.map(_agentSkillNameForId);
+  const blockedReason = a && a.hub_disabled ? t('agents.hub_disabled_hint')
+    : userOffIds.length ? t('catalog.deps_user_disabled_hint', { names: userOffNames.join('、') })
+      : depState && depState.status === 'deps_blocked' ? t('agents.deps_blocked_hint') : '';
+  const updateRow = a ? _agentCatalogUpdateRow(a) : null;
+  const installing = typeof catalogIsInstalling === 'function' && catalogIsInstalling('agent', id);
+  const failed = !a && !installing && typeof catalogInstallFailure === 'function' ? catalogInstallFailure('agent', id) : '';
+  openCatalogPopup({
+    kind: 'agent',
+    origin,
+    id,
+    name: src.name || id,
+    meta,
+    description: a ? _agentSummary(a, lang) : String(pickDesc(src, lang) || '').trim(),
+    tags: Array.isArray(src.tags) ? src.tags : [],
+    examples: src.examples,
+    skills: skillIds.map((sid) => ({ name: _agentSkillNameForId(sid), ready: installed, off: reasons[sid] === 'user_disabled' })),
+    enableDep: userOffIds.length ? { id: userOffIds[0], name: userOffNames[0] } : null,
+    iconHtml: renderAvatarHtml(src.icon, src.color, {
+      size: 52, seed: id, extraClass: 'agent-card-avatar',
+      letter: a && _isExternalCliAgent(a) ? (a.name || '') : '',
+    }),
+    installed,
+    enabled: a ? a.enabled !== false : true,
+    contributable: a ? _isAgentContributable(a) : false,
+    installing: !a && installing,
+    failed,
+    updateAvailable: !!updateRow && !installing,
+    blockedReason,
+  }, {
+    use: () => useAgent(id, 'agent_card'),
+    sendExample: async (text) => {
+      if (installed) { useAgent(id, 'agent_card', text); return; }
+      if (await _installCatalogAgent(catalogRow)) useAgent(id, 'agent_card', text);
+    },
+    install: () => _installCatalogAgent(catalogRow),
+    update: () => _installCatalogAgent(updateRow, { update: true }),
+    enable_dep: async () => {
+      if (!userOffIds.length || typeof _flipSkillEnabled !== 'function') return;
+      for (const sid of userOffIds) await _flipSkillEnabled(sid, true);
+      await loadAgents(true);
+    },
+    enable: () => _flipAgentEnabled(id, true),
+    disable: () => _flipAgentEnabled(id, false),
+    manage: () => _showAgentsDetailView(id),
+    contribute: () => _startAgentContribution(id, src.name || id),
+  });
+}
+
 function renderAgentsGrid(agents) {
   const emptyEl = document.getElementById('agents-empty');
   const chipsHost = document.getElementById('agents-categories');
   const gridEl = document.getElementById('agents-grid');
   if (!gridEl) return;
   _ensureAgentsSearchControl();
+  _agentsEnsureCatalog();
 
-  if (!agents.length) {
+  // S4：首页 = 主智能体 / 外接 / 平台（已安装 + 目录未安装）；我的 = 只放自建的。
+  const isMine = _agentsSubView === 'mine';
+  const customAgents = agents.filter(_isAgentCustomOwned);
+  const homeAgents = agents.filter((a) => !_isAgentCustomOwned(a));
+  const platformInstalled = homeAgents.filter(_isAgentPlatformInstalled);
+  if (_agentsSubView === 'installed') {
+    _renderAgentsChrome(customAgents.length, platformInstalled.length);
+    _renderAgentsInstalledView(platformInstalled, { gridEl, emptyEl, chipsHost });
+    return;
+  }
+  const viewAgents = isMine ? customAgents : homeAgents;
+  const pendingRows = isMine ? [] : _agentsCatalogPending(platformInstalled);
+  _renderAgentsChrome(customAgents.length, platformInstalled.length);
+  agents = viewAgents;
+
+  if (!agents.length && !pendingRows.length) {
     if (chipsHost) chipsHost.innerHTML = '';
     gridEl.classList.remove('is-sectioned');
     gridEl.innerHTML = '';
     if (emptyEl) {
-      if (typeof _mpUpdateInstallingEmptyStates === 'function') _mpUpdateInstallingEmptyStates();
+      if (isMine) _renderAgentsMineEmptyState(emptyEl);
+      else if (typeof _mpUpdateInstallingEmptyStates === 'function') _mpUpdateInstallingEmptyStates();
       else _renderAgentsEmptyState(emptyEl, false);
     }
     return;
@@ -789,7 +1150,6 @@ function renderAgentsGrid(agents) {
   const useLabel = t('agents.use');
   const moreTitle = t('agents.more_actions');
   const lang = getLang();
-  const customChipLabel = t('agents.custom_group');
   const baseGroupLabel = (() => {
     const raw = t('agents.base_group');
     return (raw && raw !== 'agents.base_group') ? raw : t('agents.external_group');
@@ -818,7 +1178,7 @@ function renderAgentsGrid(agents) {
   };
   const cats = (typeof _mpCategoriesCache !== 'undefined' && _mpCategoriesCache) || [];
   const knownCodes = _knownCategoryCodes(cats);
-  const rawCodesPresent = new Set(agents.map((a) => canonicalCategoryCode(a && a.category)));
+  const rawCodesPresent = new Set([...agents, ...pendingRows].map((a) => canonicalCategoryCode(a && a.category)));
   const unknownCodes = [...rawCodesPresent].filter((c) => c && !knownCodes.has(c)).sort();
   if (unknownCodes.length && typeof _mpMaybeRefreshCategoriesForCodes === 'function') {
     _mpMaybeRefreshCategoriesForCodes(unknownCodes);
@@ -870,8 +1230,14 @@ function renderAgentsGrid(agents) {
     if (!query) return true;
     return `${a?.name || ''} ${_agentSummary(a, lang)}`.toLocaleLowerCase().includes(query);
   });
+  const filteredPending = pendingRows.filter((row) => {
+    if (_agentsActiveCategory !== '' && _effectiveCategoryCode(row && row.category, knownCodes) !== _agentsActiveCategory) return false;
+    const query = _agentsSearchQuery.trim().toLocaleLowerCase();
+    if (!query) return true;
+    return `${row?.name || ''} ${pickDesc(row, lang) || ''}`.toLocaleLowerCase().includes(query);
+  });
 
-  if (!filtered.length) {
+  if (!filtered.length && !filteredPending.length) {
     gridEl.classList.remove('is-sectioned');
     gridEl.innerHTML = '';
     _renderAgentsEmptyState(emptyEl, true);
@@ -913,7 +1279,10 @@ function renderAgentsGrid(agents) {
     // Source provenance chips on the bottom row. Version/category now live
     // in the subtitle line under the card title, so marketplace only keeps
     // review status here when that UI is enabled.
-    const provenanceChips = _isAgentPlatformSource(a.source) ? _agentPlatformStatusChipsHtml(a) : '';
+    const updateChip = _agentCatalogUpdateRow(a)
+      ? `<span class="agent-card-chip is-update">${escapeHtml(t('catalog.update_chip'))}</span>`
+      : '';
+    const provenanceChips = (_isAgentPlatformSource(a.source) ? _agentPlatformStatusChipsHtml(a) : '') + updateChip;
     const canContribute = _isAgentContributable(a) && !isMock;
     // Dependencies Hub disabled make the agent unusable (same rule as install); a merely missing
     // dependency only warns, because stale refs in older agents were always tolerated at runtime.
@@ -984,13 +1353,34 @@ function renderAgentsGrid(agents) {
       </section>
     `;
   };
-  gridEl.classList.add('is-sectioned');
-  gridEl.innerHTML = sectionHtml(commanderGroupLabel, groups.commander)
-    + sectionHtml(baseGroupLabel, groups.base)
-    + sectionHtml(customChipLabel, groups.custom)
-    + sectionHtml(marketplaceGroupLabel, groups.marketplace);
+  if (isMine) {
+    // 我的智能体：一个网格、不分组（spec FR-017）。
+    gridEl.classList.remove('is-sectioned');
+    gridEl.innerHTML = filtered.map(cardHtml).join('');
+  } else {
+    // 平台：已安装在前、目录里还没装的在后，不标来源（spec FR-002）；首次加载时骨架、没有更多时说明（FR-025）。
+    const platformCount = groups.marketplace.length + filteredPending.length;
+    const filtering = Boolean(_agentsSearchQuery.trim()) || _agentsActiveCategory !== '';
+    const tail = typeof catalogPlatformTail === 'function'
+      ? catalogPlatformTail('agent', pendingRows.length, filtering) : { cards: '', note: '' };
+    const platformHtml = platformCount || tail.cards || tail.note ? `
+      <section class="agents-source-section">
+        <div class="agents-source-section-head">${escapeHtml(marketplaceGroupLabel)} · ${platformCount}</div>
+        <div class="agents-source-section-grid ui-resource-grid">
+          ${groups.marketplace.map(cardHtml).join('')}${filteredPending.map((row) => _catalogAgentCardHtml(row, lang)).join('')}${tail.cards}
+        </div>
+        ${tail.note}
+      </section>
+    ` : '';
+    gridEl.classList.add('is-sectioned');
+    gridEl.innerHTML = (typeof catalogHomeBannerHtml === 'function' ? catalogHomeBannerHtml('agent') : '')
+      + sectionHtml(commanderGroupLabel, groups.commander)
+      + sectionHtml(baseGroupLabel, groups.base)
+      + platformHtml;
+    if (typeof catalogWireBanner === 'function') catalogWireBanner(gridEl, 'agent');
+  }
 
-  for (const card of gridEl.querySelectorAll('.agent-card')) {
+  for (const card of gridEl.querySelectorAll('.agent-card[data-id]')) {
     const id = card.dataset.id;
     const source = card.dataset.source;
     card.addEventListener('click', (e) => {
@@ -1010,9 +1400,29 @@ function renderAgentsGrid(agents) {
         _toggleAgentRowMenu(e.target.closest('[data-agent-more]'), id, source);
         return;
       }
-      _showAgentsDetailView(id);
+      _openAgentCatalogPopup(id);
     });
   }
+  for (const card of gridEl.querySelectorAll('.agent-card[data-catalog-id]')) {
+    const row = filteredPending.find((x) => String(x.id) === card.dataset.catalogId);
+    if (!row) continue;
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-catalog-install]')) {
+        e.stopPropagation();
+        void _installCatalogAgent(row);
+        return;
+      }
+      _openAgentCatalogPopup('', row);
+    });
+  }
+}
+
+function _renderAgentsMineEmptyState(emptyEl) {
+  if (!emptyEl) return;
+  emptyEl.innerHTML = typeof window.uiEmptyState === 'function'
+    ? window.uiEmptyState({ kind: 'explained', title: t('catalog.mine_empty_agents'), hint: t('catalog.mine_empty_hint') })
+    : escapeHtml(t('catalog.mine_empty_agents'));
+  emptyEl.style.display = '';
 }
 
 /** Flip an agent's enabled override (used by both the ⋯ menu's toggle item
@@ -3013,6 +3423,9 @@ function _switchAgentTab(tab) {
   panels.forEach((el) => el.classList.toggle('is-active', el.dataset.agentPanel === tab));
   const msgEl = document.getElementById('agent-form-msg');
   if (msgEl) { msgEl.textContent = ''; msgEl.className = 'form-msg'; }
+  // 外接的确认按钮叫「接入」，创建的叫「确认」。
+  const saveBtn = document.getElementById('agent-save-btn');
+  if (saveBtn) saveBtn.textContent = t(tab === 'external' ? 'agent_modal.ext_confirm' : 'common.confirm');
   // 每次切到「外接」tab 都重新扫描并展示「正在扫描本机 CLI…」。之前
   // 扫描只发生在打开弹窗时一次，用户切换 tab 看到的总是早已就绪的
   // 结果 → 感知上像「没有扫描」。移到这里后，进入外接面板必然先短暂
@@ -3020,12 +3433,8 @@ function _switchAgentTab(tab) {
   if (tab === 'external') {
     _refreshExternalCliSelector();
   }
-  setTimeout(() => {
-    const focusId = tab === 'external' ? 'agent-modal-ext-cli-select' : 'agent-name-input';
-    const el = document.getElementById(focusId);
-    // ai-select wrapper isn't focusable directly; just leave it alone.
-    if (el && typeof el.focus === 'function' && el.tagName !== 'DIV') el.focus();
-  }, 30);
+  // 外接的卡片在扫描结束后才出现，不抢焦点；创建聚焦名称。
+  if (tab !== 'external') setTimeout(() => document.getElementById('agent-name-input')?.focus(), 30);
 }
 window._switchAgentTab = _switchAgentTab;
 
@@ -3036,11 +3445,24 @@ window._switchAgentTab = _switchAgentTab;
 function _refreshExternalCliSelector() {
   _externalCliProviderSelect?.setValue('');
   const providerLoad = _loadExternalCliProviders().catch(() => []);
+  // 名称 / 简介 / 模型供应商在选卡片之前置灰（2026-10-20 改版），高度不变。
   if (typeof mountExternalCliSelect === 'function') {
     mountExternalCliSelect((cli) => {
+      _setExternalFieldsIdle(!cli);
       _applyExternalCliDefaults(cli);
       providerLoad.then(() => _renderExternalCliProviderSelect(cli, _getExternalCliProviderValue(cli)));
     }).catch(() => {});
+  }
+  const rescan = document.getElementById('agent-ext-rescan');
+  if (rescan && typeof uiButton === 'function' && !rescan.dataset.wired) {
+    rescan.dataset.wired = 'true';
+    rescan.innerHTML = uiButton({ label: t('agent_modal.ext_rescan'), role: 'ghost', size: 'sm', icon: 'refresh', attrs: { 'data-ext-rescan': true } });
+    if (typeof hydrateUiIcons === 'function') hydrateUiIcons(rescan);
+    rescan.addEventListener('click', (e) => {
+      if (!e.target.closest('[data-ext-rescan]')) return;
+      e.preventDefault();
+      _refreshExternalCliSelector();
+    });
   }
   if (typeof _renderExternalPanelPeers === 'function') {
     void _renderExternalPanelPeers();
@@ -3057,12 +3479,13 @@ async function _renderExternalPanelPeers() {
   // 一个跳转入口，避免两处维护同一份节点管理逻辑。
   const slot = document.getElementById('agent-ext-peers');
   if (!slot) return;
+  // 2026-10-20 改版：底部一行说明 + 入口，不再占一整块。
   slot.innerHTML = `
-    <div class="agents-ext-peers-empty agents-ext-peers-moved">
-      <span>${escapeHtml(t('agents.peers.moved'))}</span>
+    <div class="agents-ext-peers-moved">
+      <span>${escapeHtml(t('agent_modal.ext_manage_note'))}</span>
       ${typeof uiButton === 'function' ? uiButton({
         label: t('agents.peers.open_dashboard'),
-        role: 'secondary',
+        role: 'ghost',
         size: 'sm',
         iconEnd: 'arrow-right',
         attrs: { id: 'agent-ext-peers-open-dashboard' },
@@ -3135,6 +3558,24 @@ function _applyExternalCliDefaults(cliType, { force = false } = {}) {
   _extActiveCli = cliType;
 }
 
+let _agentCreateModalController = null;
+
+function _getAgentCreateModalController() {
+  if (_agentCreateModalController || typeof uiModalController !== 'function') {
+    return _agentCreateModalController;
+  }
+  const overlay = document.getElementById('agent-modal');
+  const dialog = overlay?.querySelector('[role="dialog"]');
+  if (!overlay || !dialog) return null;
+  _agentCreateModalController = uiModalController({
+    overlay,
+    dialog,
+    initialFocus: '#agent-modal-tabs .is-active',
+    fallbackFocus: '#create-agent-btn',
+  });
+  return _agentCreateModalController;
+}
+
 function openAgentModal(options = {}) {
   const requestedTab = typeof options === 'string' ? options : options?.initialTab;
   const initialTab = requestedTab === 'external' ? 'external' : 'create';
@@ -3169,14 +3610,24 @@ function openAgentModal(options = {}) {
   }
   _switchAgentTab(initialTab);
 
-  modal.classList.add('open');
-  const focusId = initialTab === 'external' ? 'agent-ext-name-input' : 'agent-name-input';
-  setTimeout(() => document.getElementById(focusId)?.focus(), 50);
+  const controller = _getAgentCreateModalController();
+  if (controller) controller.open(document.activeElement);
+  else {
+    modal.hidden = false;
+    modal.classList.add('open');
+    if (initialTab !== 'external') setTimeout(() => document.getElementById('agent-name-input')?.focus(), 50);
+  }
 }
 window.openAgentModal = openAgentModal;
 
 function closeAgentModal() {
-  document.getElementById('agent-modal').classList.remove('open');
+  const modal = document.getElementById('agent-modal');
+  const controller = _getAgentCreateModalController();
+  if (controller?.isOpen()) controller.close('close');
+  else {
+    modal.classList.remove('open');
+    modal.hidden = true;
+  }
 }
 window.closeAgentModal = closeAgentModal;
 
@@ -3345,6 +3796,8 @@ async function _saveExternalAgent({ msgEl }) {
       runtime: { kind: 'p3394-gateway', cli },
       category: 'general',
     };
+    // 模型供应商（仅 Claude Code / Codex；留空用 CLI 自己的配置）——唤醒时由 p3394-wake-dispatcher 读取。
+    body.runtime = withCliProviderSelection(body.runtime, _getExternalCliProviderValue(cli));
     const res = await apiFetch('/api/agents/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3652,7 +4105,20 @@ async function clearAgentChat() {
 /**
  * Select an agent in the Commander tab and wait for the user's next message.
  */
-async function useAgent(agentId, managementOpenGesture) {
+/** 进入新任务后把示例作为第一条消息直接发出（详情弹窗里点示例，spec FR-008）。 */
+function _sendNewChatInitialMessage(text) {
+  const message = String(text || '').trim();
+  if (!message) return;
+  setTimeout(() => {
+    const input = document.getElementById('new-chat-input');
+    if (!input) return;
+    input.value = message;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (typeof handleNewChatSubmit === 'function') handleNewChatSubmit();
+  }, 80);
+}
+
+async function useAgent(agentId, managementOpenGesture, initialMessage) {
   if (_isAgentProfileMock(agentId)) return;
   if (_isCommanderAgent(agentId)) {
     _agentsLog.info('use commander');
@@ -3665,6 +4131,7 @@ async function useAgent(agentId, managementOpenGesture) {
     setTimeout(() => {
       document.getElementById('new-chat-input')?.focus();
     }, 50);
+    _sendNewChatInitialMessage(initialMessage);
     return;
   }
   const cachedAgent = _agentsCache?.find((a) => a.agent_id === agentId);
@@ -3729,6 +4196,7 @@ async function useAgent(agentId, managementOpenGesture) {
     setTimeout(() => {
       document.getElementById('new-chat-input')?.focus();
     }, 50);
+    _sendNewChatInitialMessage(initialMessage);
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e || t('common.unknown_error'));
     await uiAlert(t('agents.launch_failed', { reason }));
@@ -3740,7 +4208,7 @@ async function useAgent(agentId, managementOpenGesture) {
   }
 }
 
-async function useSkill(skillId, skillName) {
+async function useSkill(skillId, skillName, initialMessage) {
   if (typeof _skillsCache !== 'undefined'
       && _skillsCache?.some((s) => s.id === skillId && (s.enabled === false || (s.source === 'marketplace' && HubContentStatus.isHubContentDisabled(s))))) return;
   // Open-tier skills (external packages / global folders) live in their own
@@ -3759,6 +4227,7 @@ async function useSkill(skillId, skillName) {
   }
   setChatUseSelection('new-chat', { kind: 'skill', id: skillId, name: skillName || skillId });
   setTimeout(() => document.getElementById('new-chat-input')?.focus(), 50);
+  _sendNewChatInitialMessage(initialMessage);
 }
 
 // ─── Agent picker (one-shot, works on both new-chat and conversation) ───

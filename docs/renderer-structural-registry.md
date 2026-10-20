@@ -339,3 +339,15 @@ Review trigger: ...
 - **Layout refinement (2026-10-15)**: 展开后的模型卡与添加卡横向占满设置内容区，取消 720px 限宽；常规双行条目最小高度 56px、上下内边距 8px、条目间距 8px，长文本及窄窗口按内容增高。选择弹窗保持原有宽松间距。
 - **Review trigger**: 第二个页面需要同一设置卡头或模型列表契约时评估共享化。
 - **Related PR/issue**: TBD（本地实现）。
+
+
+### `S4-PV-001` — 智能体 / 技能页平台分组、子视图、统一详情弹窗与外接选择器
+
+- **Status**: Proposed（等待 reviewers 审批）
+- **Scope**: 「智能体 / 技能 / 连接」页的智能体、技能两个 tab 与新建智能体弹窗（`agents.js`、`skills.js`、`catalog.js`、`local-agents.js`），specs/009-agent-skill-pages。
+- **Boundary**: 首页分组复用现有 `agents-source-section` / `skills-source-section` 与 `agent-card` / `skill-card`：智能体页为主智能体 / 外接智能体 / 平台三组，技能页只有平台一组；平台组把已安装内容与目录中未安装的行合并，未安装卡片沿用同一张业务卡，只把主按钮换成安装。「我的智能体 / 我的技能」是同一网格的子视图，返回行用共享 `uiButton`（`catalog-subview-back` 只做行内排布），工具栏入口由 `uiButton` 渲染进 `catalog-toolbar-actions` 宿主，不新增原生按钮。详情弹窗按 `CONN-PV-003` 的写法与 `.connector-popup-*` 样式组合 `uiModal` lg，正文为简介、标签、示例（整行 `uiButton`）、会用到的技能（`uiStatusPill`），操作放 footer；与连接器弹窗不同，点示例直接发送。「已安装的智能体 / 技能」子视图（2026-10-20 改版）：工具栏同一行放返回（`catalog-installed-crumb`，`uiButton`）与状态筛选（`uiSegmentedControl`）和搜索，下方一行摘要，主体是一行三个的卡片网格（`catalog-installed-grid` / `catalog-installed-card`：头像 · 名称与 `uiStatusPill` 标记 · 两行说明 · 右上角启停 `uiSwitch` 与「⋯」`uiIconButton`），卸载与更新收在页面局部菜单 `catalog-row-menu`（与现有 `skill-row-menu` 同构），需要处理的行排前面；交互用 `data-catalog-row*` 委托；「我的技能」顶部说明条 `catalog-local-bar` 承载全局技能文件夹总开关（`uiSwitch`）；平台组上方的未登录 / 断网提示沿用 `marketplace-reconcile-banner` 配色，只加 `catalog-home-banner` 排布。停用 / 卸载被引用技能的确认用 `uiModal` + `ui-modal__list`。外接智能体选择器是新建弹窗专用的两列业务卡组合，用 `radiogroup` / `radio` 语义和 roving tabindex，支持方向键、Home / End、Enter / Space；字母头像与勾选图标复用现有 token 和 `uiIconHtml`，不抽成第二套通用单选控件。仅新增 `catalog-*` 与 `agent-ext-*` 排布类。
+- **Required shared seams**: `uiModal`、`uiButton`、`uiSwitch`、`uiStatusPill`、`uiEmptyState`、`uiSegmentedControl`、`uiInput`、`uiConfirm`、现有安装 / 卸载 / 启停 / 使用流程、icons、i18n、设计 token。新增 IPC 仅 `skills.getGlobalRootsEnabled` / `skills.setGlobalRootsEnabled`（只读写偏好）；不新增 modal 外壳或原生控件基线。
+- **Rationale**: 平台内容的安装、停用与示例是智能体 / 技能业务内容；与 `CONN-PV-003` 的弹窗版式相同、语义不同（安装 vs 连接，发送 vs 预填），两处稳定后可评估抽取共享「资源使用弹窗」。
+- **Decision owner/date**: `@bonc-ai/reviewers` / TBD。
+- **Review trigger**: 第三个页面需要同一使用弹窗，或连接器与本弹窗的行为契约收敛时。
+- **Related PR/issue**: TBD（本地实现，分支 `feat/s4-agent-skill-pages`）。

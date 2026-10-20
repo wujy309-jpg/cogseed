@@ -2669,3 +2669,32 @@ describe('agents › default execution config (default_model / default_thinking)
     expect(agent?.default_thinking).toBeUndefined();
   });
 });
+
+describe('agents › user-disabled dependencies (S4 FR-027)', () => {
+  it('marks an agent deps_blocked with reason user_disabled while a skill it uses is turned off', async () => {
+    writeCustomAgent('report-agent', { skill_list: ['invoice-extract', 'other'] });
+    const agents = await loadAgents();
+    const ce = await import('../../../src/main/features/component_enabled');
+    const find = async () => (await agents.listAgentsForUser(TEST_UID)).find((a) => a.agent_id === 'report-agent') as any;
+
+    expect((await find()).dependency_state).toBeUndefined();
+    ce.setSkillEnabled(TEST_UID, 'invoice-extract', false);
+    expect((await find()).dependency_state).toEqual({
+      status: 'deps_blocked', ids: ['invoice-extract'], reasons: { 'invoice-extract': 'user_disabled' },
+    });
+    ce.setSkillEnabled(TEST_UID, 'invoice-extract', true);
+    expect((await find()).dependency_state).toBeUndefined();
+  });
+
+  it('resolves a skill listed by name to its id (older agents write names)', async () => {
+    writeSkillOnDisk('invoice-extract', 'invoice-extractor');
+    writeCustomAgent('legacy-agent', { skill_list: ['invoice-extractor'] });
+    const agents = await loadAgents();
+    const ce = await import('../../../src/main/features/component_enabled');
+    ce.setSkillEnabled(TEST_UID, 'invoice-extract', false);
+    const agent = (await agents.listAgentsForUser(TEST_UID)).find((a) => a.agent_id === 'legacy-agent') as any;
+    expect(agent.dependency_state).toEqual({
+      status: 'deps_blocked', ids: ['invoice-extract'], reasons: { 'invoice-extract': 'user_disabled' },
+    });
+  });
+});

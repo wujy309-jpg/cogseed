@@ -20,6 +20,8 @@ const _rendererFeatureManifest = Object.freeze({
   ],
   marketplace: [
     { src: './modules/marketplace.js' },
+    // S4：智能体页 / 技能页的平台分组与统一详情弹窗（registry S4-PV-001），依赖 marketplace.js 的安装 / 卸载。
+    { src: './modules/catalog.js' },
   ],
   agents: [],
   auto: [

@@ -725,6 +725,16 @@ describe('My contributions page', () => {
     expect(page.calls().find((call) => call.channel === 'contribution.mine')?.payload).toEqual({ refresh: true });
   });
 
+  it('returns to the Skills grid it came from (S4: the 我的技能 sub-view is kept)', async () => {
+    const page = loadPage(router());
+    await openMine(page);
+    page.grid.style.display = 'none';
+    await page.click('mine', 'back');
+
+    expect(page.hosts.mine.style.display).toBe('none');
+    expect(page.grid.style.display).toBe('flex');
+  });
+
   it('asks for login before showing history and never lists data when it is cancelled', async () => {
     const page = loadPage(router({
       'contribution.preflight': () => ({ identity: { outcome: 'blocked', reason: 'not_signed_in' } }),

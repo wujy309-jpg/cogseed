@@ -64,6 +64,7 @@ describe('renderer lazy feature loader', () => {
     await expect(context.loadRendererFeature('marketplace')).resolves.toBeUndefined();
     expect(appended.map((script) => script.src)).toEqual([
       './modules/marketplace.js',
+      './modules/catalog.js',
     ]);
   });
 

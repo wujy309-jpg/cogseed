@@ -535,6 +535,8 @@
             </div>
           </div>
           <div class="marketplace-reconcile-banner" data-reconcile-banner data-reconcile-kind="agent" style="display:none"></div>
+          <!-- S4（specs/009）：「我的智能体」子视图的返回行，由 agents.js 渲染。 -->
+          <div class="catalog-subview-back" id="agents-subview-back" hidden></div>
           <div class="agents-resource-toolbar">
             <!-- Category controls and search are rendered by agents.js through
                  the shared segmented/button/form primitives. -->
@@ -542,6 +544,7 @@
             <div class="agents-resource-toolbar-controls">
               <div class="agents-search-field" id="agents-search-field"></div>
               <div class="header-actions">
+                <span class="catalog-toolbar-actions" id="agents-catalog-actions"></span>
                 <button type="button" class="btn ui-button ui-button--secondary ui-button--sm" id="create-agent-btn" data-i18n="agents.create_btn">+ Create</button>
                 <button type="button" class="btn ui-button ui-button--secondary ui-button--sm" id="agents-mine-btn" data-agents-contribution-mine data-i18n="agents.contribute_mine">My contributions</button>
                 <button type="button" class="btn ui-button ui-button--secondary ui-button--sm" id="agents-more-btn" data-i18n="agents.more_btn">More</button>
@@ -726,11 +729,14 @@
                     <span data-i18n="skills.title">Skills</span>
                   </div>
                   <div class="marketplace-reconcile-banner" data-reconcile-banner data-reconcile-kind="skill" style="display:none"></div>
+                  <!-- S4（specs/009）：「我的技能」子视图的返回行，由 skills.js 渲染。 -->
+                  <div class="catalog-subview-back" id="skills-subview-back" hidden></div>
                   <div class="skills-resource-toolbar">
                     <div class="marketplace-categories skills-categories" id="skills-categories"></div>
                     <div class="skills-resource-toolbar-controls">
                       <div class="skills-search-field" id="skills-search-field"></div>
                       <div class="header-actions">
+                        <span class="catalog-toolbar-actions" id="skills-catalog-actions"></span>
                         <button type="button" class="btn ui-button ui-button--secondary ui-button--sm" id="create-skill-btn" data-i18n="skills.add">+ Create</button>
                         <button type="button" class="btn ui-button ui-button--secondary ui-button--sm" id="skills-more-btn" data-i18n="skills.more_btn">More</button>
                       </div>
@@ -1429,7 +1435,7 @@
   </div>
 
   <!-- Create Agent Modal -->
-  <div class="modal-overlay" id="agent-modal">
+  <div class="modal-overlay" id="agent-modal" hidden>
     <div class="modal modal-standard" role="dialog" aria-modal="true" aria-labelledby="agent-modal-title">
       <div class="modal-header">
         <h3 class="modal-title" id="agent-modal-title" data-i18n="agent_modal.title">New agent</h3>
@@ -1452,39 +1458,42 @@
           <input type="text" id="agent-name-input" data-i18n-placeholder="agent_modal.name_placeholder" placeholder="e.g. CodeReviewAssistant" />
         </div>
         <div class="form-row">
-          <label data-i18n="agents.label_output_format">Output format</label>
-          <div class="ai-select" id="agent-output-format-select"></div>
-        </div>
-        <div class="form-row">
           <label><span data-i18n="agent_modal.desc">Summary</span> <span class="form-hint" data-i18n="agent_modal.desc_hint">One line on what it does — the AI will generate a workflow from this</span></label>
           <textarea id="agent-desc-input" rows="4" data-i18n-placeholder="agent_modal.desc_placeholder" placeholder="e.g. Review my code before commit, focus on logic bugs and security issues..."></textarea>
         </div>
+        <!-- 输出格式不在创建时选（默认「自动」）：创建后在智能体详情里设置（2026-10-20）。 -->
+        <p class="form-hint agent-create-later-hint" data-i18n="agent_modal.create_later_hint">Output format, skills and more can be set in the agent's details after it is created.</p>
       </div>
 
       <!-- External panel (P3394 way): a picked CLI joins through a managed
            p3394-gateway — one protocol for ANY external agent (Hermes,
            Claude Code, Codex, OpenClaw, WorkBuddy, user-built agents). -->
       <div class="skill-modal-panel" data-agent-panel="external">
+        <!-- 2026-10-20 改版：本机识别到的智能体做成卡片选择（agent-ext-pick，由 local-agents.js 渲染），
+             选中后才出现自动填好的名称 / 简介和（Claude Code、Codex 的）模型供应商。 -->
         <div class="form-row">
-          <label data-i18n="agent_modal.ext_cli_label">Agent</label>
-          <div class="ai-select" id="agent-modal-ext-cli-select"></div>
-          <div class="form-hint" id="agent-ext-missing-hint" style="display:none"></div>
-          <div class="form-hint" data-i18n="agent_modal.ext_p3394_hint">Connect over the P3394 protocol — CogSeed starts a local gateway and registers the agent as a collaboration node.</div>
+          <div class="agent-ext-pick-head">
+            <!-- 点未检测到的卡片时，原因显示在这条提示里（不新增一行，弹窗高度不变）。 -->
+            <label><span data-i18n="agent_modal.ext_pick_label">Choose an agent on this computer</span> <span class="form-hint" id="agent-ext-missing-hint" aria-live="polite" data-i18n="agent_modal.ext_pick_hint">Ones installed on this computer are detected automatically</span></label>
+            <span id="agent-ext-rescan"></span>
+          </div>
+          <div class="agent-ext-pick" id="agent-ext-pick" role="radiogroup" data-i18n-aria-label="agent_modal.ext_pick_label" aria-label="Choose an agent on this computer"></div>
         </div>
-        <div class="form-row">
-          <label data-i18n="agent_modal.ext_name">Name</label>
-          <input type="text" id="agent-ext-name-input" data-i18n-placeholder="agent_modal.ext_name_placeholder" placeholder="e.g. ClaudeCode" />
+        <div class="agent-ext-fields is-idle" id="agent-ext-fields">
+          <div class="form-row">
+            <label><span data-i18n="agent_modal.ext_name">Name</span> <span class="form-hint" data-i18n="agent_modal.ext_autofill_hint">Filled in from your choice; you can change it</span></label>
+            <input type="text" id="agent-ext-name-input" data-i18n-placeholder="agent_modal.ext_name_placeholder" placeholder="e.g. ClaudeCode" />
+          </div>
+          <div class="form-row">
+            <label data-i18n="agent_modal.ext_desc">Summary</label>
+            <textarea id="agent-ext-desc-input" rows="2" data-i18n-placeholder="agent_modal.ext_desc_placeholder" placeholder="(auto-filled when a CLI is picked; can be overridden)"></textarea>
+          </div>
+          <div class="form-row" id="agent-ext-provider-row">
+            <label><span data-i18n="agent_modal.ext_provider_label">Model provider</span> <span class="form-hint" data-i18n="agent_modal.ext_provider_hint">Optional. Leave empty to use the CLI's own configuration.</span></label>
+            <div class="ai-select" id="agent-modal-ext-provider-select"></div>
+          </div>
         </div>
-        <div class="form-row">
-          <label data-i18n="agent_modal.ext_desc">Summary</label>
-          <textarea id="agent-ext-desc-input" rows="4" data-i18n-placeholder="agent_modal.ext_desc_placeholder" placeholder="(auto-filled when a CLI is picked; can be overridden)"></textarea>
-        </div>
-        <!-- P3394 已接入节点（统一注册表管理区）：当前已注册的全部 P3394
-             节点（含自研网关/远端 peer），在线状态 + 移除/停用。 -->
-        <div class="form-row form-row-ext-peers">
-          <label data-i18n="agent_modal.ext_peers_label">Connected P3394 nodes</label>
-          <div id="agent-ext-peers"></div>
-        </div>
+        <div class="agent-ext-manage-note" id="agent-ext-peers"></div>
       </div>
 
       <div class="form-msg" id="agent-form-msg"></div>

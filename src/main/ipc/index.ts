@@ -6413,6 +6413,15 @@ const invokeHandlers: Record<string, InvokeHandler> = {
   // each provenance. Disabled ids are NOT filtered here — the panel renders the
   // toggle state itself. (enable/disable is keyed by id, so a same-id skill in
   // both tiers shares one toggle state.)
+  // 「我的技能」顶部的全局技能文件夹总开关（~/.claude、~/.codex 等）。只读写偏好；写后使技能缓存失效，
+  // 下次列技能 / 构建 runner 时按新值扫描。不改任何文件夹里的文件。
+  'skills.getGlobalRootsEnabled': async () => ({ enabled: appConfig.getGlobalSkillRootsEnabled() }),
+  'skills.setGlobalRootsEnabled': async (payload: { enabled?: unknown }) => {
+    if (typeof payload?.enabled !== 'boolean') throw new Error('enabled must be boolean');
+    const enabled = appConfig.setGlobalSkillRootsEnabled(payload.enabled);
+    try { (await import('../model/core-agent/skill-registry')).invalidateSkills(); } catch { /* runner not loaded */ }
+    return { ok: true as const, enabled };
+  },
   'skills.listOpen': async (_payload: unknown, ctx: { userId: string }) => {
     const reg = await import('../model/core-agent/skill-registry');
     const componentEnabled = await import('../features/component_enabled');
