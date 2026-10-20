@@ -1679,6 +1679,19 @@
     externalBtn.id = 'kb-fv-external';
     externalBtn.title = _tr('kb.workbench.viewer_external_tip', '用本机默认应用打开（可编辑/批注/打印）');
     externalBtn.hidden = true;
+    const editBtn = el('button', 'kb-fv-btn', _tr('kb.workbench.viewer_edit', '编辑'));
+    editBtn.type = 'button';
+    editBtn.id = 'kb-fv-edit';
+    editBtn.title = _tr('kb.workbench.viewer_edit_tip', '在线编辑文本内容');
+    editBtn.hidden = true;
+    const saveBtn = el('button', 'kb-fv-btn', _tr('kb.workbench.viewer_save', '保存'));
+    saveBtn.type = 'button';
+    saveBtn.id = 'kb-fv-save';
+    saveBtn.hidden = true;
+    const downloadBtn = el('button', 'kb-fv-btn', _tr('kb.workbench.viewer_download', '下载'));
+    downloadBtn.type = 'button';
+    downloadBtn.id = 'kb-fv-download';
+    downloadBtn.hidden = true;
     const readerBtn = el('button', 'kb-fv-btn', _tr('kb.workbench.viewer_reader', '⇱ 阅读模式'));
     readerBtn.type = 'button';
     readerBtn.id = 'kb-fv-reader';
@@ -1690,7 +1703,7 @@
     closeBtn.type = 'button';
     closeBtn.id = 'kb-fv-close';
     closeBtn.title = _tr('kb.workbench.viewer_close_esc', '关闭（Esc）');
-    headActions.append(zoomOutBtn, zoomLabel, zoomInBtn, sourceBtn, externalBtn, readerBtn, closeBtn);
+    headActions.append(zoomOutBtn, zoomLabel, zoomInBtn, sourceBtn, editBtn, saveBtn, downloadBtn, externalBtn, readerBtn, closeBtn);
     head.append(headMain, headActions);
 
     const body = el('div', 'kb-fv-body');
@@ -1706,7 +1719,11 @@
     const mdEl = el('div', 'kb-fv-md');
     mdEl.id = 'kb-fv-md';
     mdEl.hidden = true;
-    body.append(loading, errorEl, textEl, mdEl);
+    const editor = el('textarea', 'kb-fv-editor');
+    editor.id = 'kb-fv-editor';
+    editor.hidden = true;
+    editor.spellcheck = false;
+    body.append(loading, errorEl, textEl, mdEl, editor);
 
     const resizeHandle = el('div', 'kb-fv-resize');
     resizeHandle.title = _tr('kb.workbench.viewer_resize', '拖动调整窗口大小');
@@ -1754,6 +1771,9 @@
         }
       }).catch(() => { /* ignore */ });
     });
+    editBtn.addEventListener('click', () => _fvStartEdit(overlay));
+    saveBtn.addEventListener('click', () => void _fvSaveEdit(overlay));
+    downloadBtn.addEventListener('click', () => void _fvDownloadCurrent());
     // Ctrl/Cmd + 滚轮 缩放内容（pdf 内部滚轮由 PDFium 自行处理，不劫持）
     body.addEventListener('wheel', (e) => {
       if (!e.ctrlKey && !e.metaKey) return;
@@ -1924,11 +1944,93 @@
   let _fvZoom = 1;
   let _fvCur = null; // { mode: 'md'|'text'|'office'|'pdf'|'html'|'image'|'media', el?, src? }
   let _fvCtx = null; // 当前文件的 { path, spaceId }：给"在系统中打开"用
+  let _fvEditing = false;
+  let _fvEditContent = null;
   /** "在系统中打开"要发给主进程的参数（无当前文件 → null；纯函数，便于测试锁定载荷）。 */
   function _fvExternalTarget() {
     const cur = _fvCtx;
     if (!cur || !cur.path) return null;
     return cur.spaceId ? { spaceId: cur.spaceId, path: cur.path } : { path: cur.path };
+  }
+
+  function _fvTextContent() {
+    return _fvEditContent && (_fvEditContent.kind === 'text' || _fvEditContent.kind === 'markdown')
+      ? _fvEditContent : null;
+  }
+
+  function _fvStartEdit(overlay) {
+    const content = _fvTextContent();
+    const editor = overlay?.querySelector('#kb-fv-editor');
+    if (!content || !editor) return;
+    _fvEditing = true;
+    editor.value = String(content.content || '');
+    overlay.querySelector('#kb-fv-text')?.setAttribute('hidden', '');
+    overlay.querySelector('#kb-fv-md')?.setAttribute('hidden', '');
+    editor.hidden = false;
+    overlay.querySelector('#kb-fv-edit').hidden = true;
+    overlay.querySelector('#kb-fv-save').hidden = false;
+    editor.focus();
+  }
+
+  async function _fvSaveEdit(overlay) {
+    const content = _fvTextContent();
+    const editor = overlay?.querySelector('#kb-fv-editor');
+    if (!content || !editor || !_fvCtx?.path) return;
+    const save = overlay.querySelector('#kb-fv-save');
+    if (save) save.disabled = true;
+    try {
+      const res = _fvCtx.spaceId
+        ? await window.cogseed.invoke('spaces.files.updateText', { spaceId: _fvCtx.spaceId, name: _fvCtx.path, content: editor.value })
+        : await window.cogseed.invoke('contexts.update', { path: _fvCtx.path, content: editor.value });
+      if (!res || res.ok === false) throw new Error((res && res.error) || 'save failed');
+      content.content = editor.value;
+      _fvEditing = false;
+      editor.hidden = true;
+      const textEl = overlay.querySelector('#kb-fv-text');
+      const mdEl = overlay.querySelector('#kb-fv-md');
+      if (content.kind === 'markdown') {
+        mdEl.innerHTML = `<div class="markdown-body kb-fv-markdown">${typeof renderMarkdown === 'function' ? renderMarkdown(editor.value) : _esc(editor.value)}</div>`;
+        mdEl.hidden = false;
+      } else {
+        textEl.textContent = editor.value;
+        textEl.hidden = false;
+      }
+      overlay.querySelector('#kb-fv-edit').hidden = false;
+      overlay.querySelector('#kb-fv-save').hidden = true;
+      if (typeof uiToast === 'function') uiToast(_tr('kb.workbench.viewer_saved', '已保存'), { variant: 'success', timeoutMs: 1500 });
+      _scheduleTreeReload();
+    } catch (err) {
+      if (typeof uiToast === 'function') uiToast(_tr('kb.workbench.viewer_save_failed', '保存失败：') + ((err && err.message) || String(err)), { variant: 'error' });
+    } finally {
+      if (save) save.disabled = false;
+    }
+  }
+
+  async function _fvDownloadCurrent() {
+    if (!_fvCtx?.path) return;
+    await _downloadKbFile(_fvCtx.path, _fvCtx.spaceId || '');
+  }
+
+  async function _downloadKbFile(relPath, spaceId) {
+    try {
+      const res = await window.cogseed.invoke('kb.download', {
+        ...(spaceId ? { spaceId } : {}),
+        path: relPath,
+        fileName: String(relPath).split('/').pop(),
+      });
+      if (res && res.ok === false) throw new Error(res.error || 'download failed');
+      if (!res?.canceled && typeof uiToast === 'function') uiToast(_tr('kb.workbench.viewer_downloaded', '已下载到本地'), { variant: 'success', timeoutMs: 1800 });
+    } catch (err) {
+      if (typeof uiToast === 'function') uiToast(_tr('kb.workbench.viewer_download_failed', '下载失败：') + ((err && err.message) || String(err)), { variant: 'error' });
+    }
+  }
+
+  function _openTextFileEditor(relPath, spaceId) {
+    void _openFileViewer(
+      spaceId ? { spaceId, path: relPath } : { path: relPath },
+      spaceId || _state.currentLib || '',
+      null,
+    );
   }
   /** HTML 文件：在"渲染页面"和"源码"之间切换（只对 html 显示该按钮）。 */
   function _fvToggleHtmlSource(overlay, content) {
@@ -2273,6 +2375,10 @@
     const errorEl = overlay.querySelector('#kb-fv-error');
     const textEl = overlay.querySelector('#kb-fv-text');
     const mdEl = overlay.querySelector('#kb-fv-md');
+    const editor = overlay.querySelector('#kb-fv-editor');
+    const editBtn = overlay.querySelector('#kb-fv-edit');
+    const saveBtn = overlay.querySelector('#kb-fv-save');
+    const downloadBtn = overlay.querySelector('#kb-fv-download');
     const body = overlay.querySelector('.kb-fv-body');
     // 清理上一个文件的嵌入 iframe（pdf / office html），释放 blob URL
     body.querySelectorAll('.kb-fv-frame').forEach((f) => f.remove());
@@ -2288,6 +2394,12 @@
     errorEl.hidden = true; errorEl.textContent = '';
     textEl.hidden = true; textEl.textContent = '';
     mdEl.hidden = true; mdEl.innerHTML = '';
+    if (editor) { editor.hidden = true; editor.value = ''; }
+    _fvEditing = false;
+    _fvEditContent = null;
+    if (editBtn) editBtn.hidden = true;
+    if (saveBtn) saveBtn.hidden = true;
+    if (downloadBtn) downloadBtn.hidden = true;
     if (st.title) overlay.querySelector('#kb-fv-title').textContent = st.title;
     const scopeEl = overlay.querySelector('#kb-fv-scope');
     scopeEl.textContent = st.scope ? _tr('kb.workbench.viewer_scope', '来自「{scope}」', { scope: st.scope }) : '';
@@ -2299,6 +2411,7 @@
     _fvCtx = st.content ? { path: String(st.content.path || st.content.relPath || ''), spaceId: st.content.spaceId ? String(st.content.spaceId) : '' } : null;
     const extBtn = overlay.querySelector('#kb-fv-external');
     if (extBtn) extBtn.hidden = !(_fvCtx && _fvCtx.path);
+    if (downloadBtn) downloadBtn.hidden = !(_fvCtx && _fvCtx.path);
     overlay.querySelector('.kb-fv-dialog')?.classList.remove('kb-fv-dialog--reader');
     if (st.error) {
       errorEl.hidden = false;
@@ -2311,6 +2424,8 @@
       errorEl.textContent = _tr('kb.workbench.viewer_empty', '文件内容为空');
       return;
     }
+    _fvEditContent = c;
+    if (editBtn) editBtn.hidden = !(c.kind === 'text' || c.kind === 'markdown');
     if (c.kind === 'markdown') {
       mdEl.hidden = false;
       const bodyMd = String(c.content || '');
@@ -2493,6 +2608,14 @@
         font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
         font-size: 13px; line-height: 1.7; color: inherit;
       }
+      .kb-fv-editor {
+        display: block; width: 100%; min-height: 360px; resize: none;
+        box-sizing: border-box; border: 1px solid rgba(14,159,110,.35);
+        border-radius: 8px; padding: 14px; background: var(--surface, #fff);
+        color: inherit; font: 13px/1.7 var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+        outline: none;
+      }
+      .kb-fv-editor:focus { border-color: #0E9F6E; box-shadow: 0 0 0 2px rgba(14,159,110,.12); }
       .kb-fv-markdown { font-size: 14px; line-height: 1.8; }
       .kb-fv-dialog--reader .kb-fv-body { padding: 32px 56px; }
       .kb-fv-dialog--reader .kb-fv-markdown { font-size: 16px; }
@@ -6760,7 +6883,13 @@ let _mmZoom = 1, _mmPanX = 0, _mmPanY = 0, _mmPanning = false, _mmPanStart = nul
       { key: 'rename', label: _tr('kb.workbench.menu_rename', '重命名'), icon: 'edit-pencil', fn: () => _kbRename(path, isDir) },
       { key: 'delete', label: _tr('kb.workbench.delete_to_trash', '删除到回收站'), icon: 'trash-2', danger: true, fn: () => _kbDelete(path) },
     ];
-    if (!isDir) items.push({ key: 'reveal', label: _tr('kb.workbench.reveal_file', '在文件夹中显示'), icon: 'folder-open', fn: () => _kbReveal(path) });
+    if (!isDir) {
+      items.push({ key: 'download', label: _tr('kb.workbench.viewer_download', '下载'), icon: 'download', fn: () => _downloadKbFile(path, '') });
+      if (!_isRichPreview(path)) {
+        items.push({ key: 'edit', label: _tr('kb.workbench.viewer_edit', '在线编辑'), icon: 'edit-pencil', fn: () => _openTextFileEditor(path, '') });
+      }
+      items.push({ key: 'reveal', label: _tr('kb.workbench.reveal_file', '在文件夹中显示'), icon: 'folder-open', fn: () => _kbReveal(path) });
+    }
     // 文档级脑图：以这一份文档为中心主题（整库脑图是按目录聚合的，多文档库里
     // 根主题会变成"这个库是什么"，一级分支按文件分而不是按内容主题分）。
     if (!isDir) items.unshift({ key: 'mindmap', label: _tr('kb.workbench.menu_mindmap', '生成脑图（本文档）'), icon: 'brain-circuit', fn: () => _kbMindmapForDoc(path) });
@@ -6769,6 +6898,7 @@ let _mmZoom = 1, _mmPanX = 0, _mmPanY = 0, _mmPanning = false, _mmPanStart = nul
 
   function _kbExternalFileMenu(path, x, y) {
     _kbMenuShow([
+      { key: 'download', label: _tr('kb.workbench.viewer_download', '下载'), icon: 'download', fn: () => _downloadKbFile(path, '') },
       { key: 'reveal', label: _tr('kb.workbench.reveal_file', '在文件夹中显示'), icon: 'folder-open', fn: () => _kbReveal(path) },
     ], x, y);
   }
@@ -6789,6 +6919,8 @@ let _mmZoom = 1, _mmPanX = 0, _mmPanY = 0, _mmPanning = false, _mmPanStart = nul
     el.className = 'kb-ctx-menu kb-file-menu';
     el.innerHTML = `
       ${_uiButton({ label: _tr('kb.workbench.menu_mindmap', '生成脑图（本文档）'), icon: 'brain-circuit', role: 'ghost', size: 'sm', className: 'kb-ctx-menu-item', attrs: { 'data-fm': 'mind' } })}
+      ${_uiButton({ label: _tr('kb.workbench.viewer_download', '下载'), icon: 'download', role: 'ghost', size: 'sm', className: 'kb-ctx-menu-item', attrs: { 'data-fm': 'download' } })}
+      ${!_isRichPreview(path) ? _uiButton({ label: _tr('kb.workbench.viewer_edit', '在线编辑'), icon: 'edit-pencil', role: 'ghost', size: 'sm', className: 'kb-ctx-menu-item', attrs: { 'data-fm': 'edit' } }) : ''}
       ${_uiButton({ label: _tr('kb.workbench.menu_pin', '置顶'), icon: 'pin', role: 'ghost', size: 'sm', className: 'kb-ctx-menu-item', attrs: { 'data-fm': 'pin' } })}
       ${_uiButton({ label: _tr('kb.workbench.menu_tag', '编辑标签'), icon: 'tag', role: 'ghost', size: 'sm', className: 'kb-ctx-menu-item', attrs: { 'data-fm': 'tag' } })}
       ${_uiButton({ label: _tr('kb.workbench.menu_rename', '重命名'), icon: 'edit-pencil', role: 'ghost', size: 'sm', className: 'kb-ctx-menu-item', attrs: { 'data-fm': 'rename' } })}
@@ -6826,6 +6958,8 @@ let _mmZoom = 1, _mmPanX = 0, _mmPanY = 0, _mmPanning = false, _mmPanStart = nul
       const act = item.dataset.fm;
       close();
       if (act === 'mind') _kbMindmapForDoc(path);
+      else if (act === 'download') _downloadKbFile(path, _state.spaceId || '');
+      else if (act === 'edit') _openTextFileEditor(path, _state.spaceId || '');
       else if (act === 'pin') { if (typeof uiToast === 'function') uiToast(_tr('kb.workbench.soon_pin', '置顶：即将上线'), { variant: 'info' }); }
       else if (act === 'tag') { if (typeof uiToast === 'function') uiToast(_tr('kb.workbench.soon_tag', '编辑标签：即将上线'), { variant: 'info' }); }
       else if (act === 'rename') _kbRenameSpaceFile(path);
