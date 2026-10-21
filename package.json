@@ -1,6 +1,6 @@
 {
   "name": "cogseed",
-  "version": "1.3.0",
+  "version": "1.4.0-rc.1",
   "private": true,
   "description": "CogSeed desktop — personal cognition asset workspace",
   "main": "bootstrap.cjs",

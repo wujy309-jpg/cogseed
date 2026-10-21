@@ -49,7 +49,8 @@ import {
   appendJsonlAtomic, invalidateLineCount, readJsonl, safeId,
 } from '../storage';
 import { invalidateSkills as invalidateCoreAgentSkills } from '../model/core-agent/skill-registry';
-import { readDisabledSets, setSkillEnabled } from './component_enabled';
+import { isSkillEnabled, readDisabledSets, setSkillEnabled } from './component_enabled';
+import { recordSkillEnabled } from './marketplace/engagement-event';
 import { partitionSkillsByTrustDeep, topViolationOf } from './skill_reverify';
 import { securityNotableOf } from './skill_verdict';
 import { listReceipts, skillPayloadHash, writeInstallReceipt, type SecurityReceipt } from './skill_trust';
@@ -1215,7 +1216,11 @@ export function setSkillEnabledForActiveUser(skillId: string, enabled: boolean):
 }
 
 export function setSkillEnabledForUser(userId: string, skillId: string, enabled: boolean): void {
+  // 重新启用才计一次「安装/启用」；读不到旧状态时按原本可用处理，避免误报。
+  let wasEnabled = true;
+  try { wasEnabled = isSkillEnabled(userId, skillId); } catch { /* 读不到按原本可用 */ }
   setSkillEnabled(userId, skillId, enabled);
+  if (enabled && !wasEnabled) void recordSkillEnabled(userId, skillId);
   // `enabled` is overlaid outside the catalog cache, so toggling it must not
   // discard and rebuild the unchanged SKILL.md snapshot.
   invalidateCoreAgentSkills();

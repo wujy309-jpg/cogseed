@@ -269,6 +269,7 @@ import { withMarketplaceCacheLock, withMarketplaceInstallLock } from './marketpl
 import { agentPrivateSkillIdsFromBundle, stampPrivateSkillOwners } from './marketplace_private_skills';
 import { MarketplaceError } from './marketplace/errors';
 import { readContentStatus, readInstalledVersion } from './marketplace/installed-version';
+import { recordSkillActivated } from './marketplace/engagement-event';
 import { builtinCapabilityAvailable } from './agent_dependency_state';
 import { beginAgentReplace, recoverInterruptedAgentReplaces } from './marketplace_agent_replace';
 import { clearAgentUpdateFailure } from './agent_update_failures';
@@ -1653,6 +1654,7 @@ async function _installMarketplaceSkillLocked(
     //    ⚠️ 本机版本取自 `installed-version.ts` 这一**单一判定入口**（FR-019/FR-020）：
     //    读的是已成功原子落盘的本地事实，**不是**安装清单里的目标版本。
     const localFact = readInstalledVersion(uid, skillId);
+    const wasInstalledBefore = localFact.version !== null;
     if (localFact.version && opts.force !== true) {
       const decision = decideMarketplaceContentUpdate(
         {
@@ -1855,6 +1857,10 @@ async function _installMarketplaceSkillLocked(
       min_app_version: detail.min_app_version || '',
     });
     log.info('installed marketplace skill', { skillId, version: detail.version, target: logPathRef(target) });
+    if (!wasInstalledBefore) {
+      // 安装成功才计一次；更新/保留本机副本不产生事件。不等待网络，失败也不影响安装。
+      void recordSkillActivated(uid, skillId, detail.version);
+    }
     // W5: a restricted (Medium) verdict rides on the success response so the
     // renderer can show ONE quiet notice. No new dialog — the install succeeded,
     // and the risk card already lives on the skill's security panel.

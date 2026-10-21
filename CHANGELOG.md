@@ -7,6 +7,22 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **S4 智能体 / 技能页改版**：首页按主智能体 / 外接智能体 / 平台分组，统一详情弹窗展示
+  「能做什么 / 示例 / 标签 / 会用到的技能」，新增「已安装」管理页与分类筛选；平台内容统一
+  从 Hub 目录读取，默认安装走 `/marketplace/defaults`。
+- **内容使用上报**：首次安装、停用后重新启用、会话首次纳入 Hub Agent 时上报
+  `activate` / `session_start` 事件；只发按内容隔离的匿名摘要，失败不重试、不影响本机操作。
+- **23 个随包私有技能的安全性声明**：补齐 `references/security-manifest.yaml`、`artifact.yaml`、
+  `evals` 与引用文件，使 UIDesigner / SeoGeoAgent 能通过 Hub 发布闸；`seo-crawl` 按已确认的
+  公开网络例外（B）声明，保留 SSRF 守卫与私网阻断。
+
+### Changed
+
+- 内置内容清单 `resources/builtin/_manifest.json` 随新增声明文件重算；S4 之后不再把随包内容
+  当成 Hub 目录的替代来源。
+
 ### Fixed
 
 - **Windows 上 EduSeed 课程插件的学习记录不再落到"当前工作目录"** — 插件运行时用

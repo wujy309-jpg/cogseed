@@ -115,6 +115,7 @@ import * as skills from '../features/skills';
 import * as skillReverify from '../features/skill_reverify';
 import * as skillTrust from '../features/skill_trust';
 import * as marketplace from '../features/marketplace';
+import { recordAgentSessionStarts } from '../features/marketplace/engagement-event';
 import * as notificationPermissions from '../features/notification_permissions';
 import * as marketplaceBiz from '../features/marketplace_biz';
 import * as marketplaceCache from '../features/marketplace_cache';
@@ -2109,13 +2110,17 @@ const invokeHandlers: Record<string, InvokeHandler> = {
         || !_isRecipientOrigin(recipient_origin))) {
       throw new Error('invalid recipient route');
     }
-    return groupChat.send({
+    const sent = await groupChat.send({
       userId: ctx.userId, cid, text,
       ...(atts.length ? { attachments: atts } : {}),
       ...(useSelections.length ? { use_selections: useSelections } : {}),
       ...(refs.length ? { references: refs } : {}),
       ...(recipient_agent_id ? { recipient_agent_id, recipient_origin } : {}),
     });
+    if (sent.ok && recipient_agent_id) {
+      void recordAgentSessionStarts({ agentIds: [recipient_agent_id], cid, userId: ctx.userId });
+    }
+    return sent;
   },
 
   'companionRepro.getState': async ({ cid }, ctx) => {
@@ -7203,6 +7208,20 @@ const streamHandlers: Record<string, StreamHandler> = {
                 ...(execution_configs ? { execution_configs } : {}),
                 ...(submit_request_id ? { submit_request_id } : {}),
               });
+        // 新会话里第一次把 Hub Agent 纳入成员/点名/接收者时计一次会话启动。
+        // 重试/编辑不重复计；标记文件保证同一会话同一 Agent 只发一次。
+        if (!retryMessageId && !editMessageId
+          && (sendRes as { ok?: boolean } | null)?.ok === true) {
+          void recordAgentSessionStarts({
+            agentIds: Array.from(new Set([
+              ...(memberIds ?? []),
+              ...(mentionIds ?? []),
+              ...(recipient_agent_id ? [recipient_agent_id] : []),
+            ])),
+            cid,
+            userId: ctx.userId,
+          });
+        }
       } catch (err) {
         sendErr = err;
       } finally {
