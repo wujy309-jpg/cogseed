@@ -1350,7 +1350,10 @@ async function _pullAgentLocked(uid: string, row: AgentInstall, opts: Marketplac
       state?: string;
       min_app_version?: string;
       minAppVersion?: string;
-    }>('/marketplace/agents/detail', { id: row.id });
+    }>('/marketplace/agents/detail',
+      // Hub 要求 content_id + version（B-05），旧版只认 id：两者都带。
+      row.version ? { id: row.id, content_id: row.id, version: row.version } : { id: row.id },
+    );
     const minAppVersion = _normalizeMinAppVersion(fresh, fresh.agent_json);
     current = {
       ...row,

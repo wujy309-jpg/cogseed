@@ -118,13 +118,6 @@ const REQUIRED_BUILTIN_INVENTORY = Object.freeze({
     'e7f5c0e6f1be',
     'ee99fbb42964',
     'ffaad9705891',
-    '36867a076129',
-    '396f58aeffd0',
-    '56023303d185',
-    '910301a3f5be',
-    'a79d235e416b',
-    'd1e0d20f4b28',
-    'f45f8fe237c9',
   ]),
 });
 

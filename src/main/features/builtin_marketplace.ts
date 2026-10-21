@@ -868,7 +868,12 @@ async function _resolveAgentInstall(uid: string, row: AgentInstall): Promise<Age
     default_install?: boolean;
     status?: string;
     state?: string;
-  }>('/marketplace/agents/detail', { id: catalog.id });
+  }>('/marketplace/agents/detail',
+    // Hub 要求 content_id + version（B-05），旧版只认 id：两者都带。
+    typeof catalog.version === 'string' && catalog.version
+      ? { id: catalog.id, content_id: catalog.id, version: catalog.version }
+      : { id: catalog.id },
+  );
   return {
     id: catalog.id,
     version: normalizeInstallVersion(detail.version || catalog.version),

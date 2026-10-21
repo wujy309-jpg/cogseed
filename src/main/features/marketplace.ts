@@ -1040,8 +1040,14 @@ export async function getAgentDetailForUser(
     });
   }
   // Miss → fetch + repopulate.
+  // Hub 的 `agents/detail` 要求 `content_id` + `version`（B-05），旧版只认 `id`；两者都带，
+  // 老 Hub 仍可解析。版本优先取调用方期望值，其次从目录行取。
+  const fallbackRow = await _findAgentCatalogRowForInstall(agentId);
+  const fallbackVersion = (expect && typeof expect.version === 'string' && expect.version)
+    || (fallbackRow && typeof fallbackRow.version === 'string' ? fallbackRow.version : '');
   const data = await postJson<{ agent_json: Record<string, unknown>; version: string; category: string; published_at: number; updated_at?: number; agent_json_url: string; agent_skills_bundle_url?: string; create_uid: string; default_install?: boolean; is_open_source?: boolean; status?: string; state?: string; min_app_version?: string; minAppVersion?: string }>(
-    '/marketplace/agents/detail', { id: agentId },
+    '/marketplace/agents/detail',
+    fallbackVersion ? { id: agentId, content_id: agentId, version: fallbackVersion } : { id: agentId },
   );
   await writeAgentCacheForUser(userId, agentId, data.agent_json, {
     version: data.version, published_at: data.published_at, updated_at: data.updated_at,
@@ -1356,8 +1362,13 @@ async function _installMarketplaceAgentLocked(
       if (!detail.agent_json_url) {
         // Cache-hit path returns url='' (and create_uid=''); re-fetch via detail endpoint to
         // capture both — needed for manifest + `_install.json` author badge.
+        // 同 miss 分支：Hub 要求 content_id + version，旧版只认 id，故两者都带。
+        // 版本此时已在 `detail`（缓存命中）里，直接复用。
         const fresh = await postJson<{ agent_json: Record<string, unknown>; version: string; category: string; published_at: number; updated_at?: number; agent_json_url: string; agent_skills_bundle_url?: string; create_uid: string; default_install?: boolean; is_open_source?: boolean; status?: string; state?: string; min_app_version?: string; minAppVersion?: string }>(
-          '/marketplace/agents/detail', { id: agentId },
+          '/marketplace/agents/detail',
+          detail.version
+            ? { id: agentId, content_id: agentId, version: detail.version }
+            : { id: agentId },
         );
         const minAppVersion = _normalizeMarketplaceMinAppVersion(fresh, fresh.agent_json);
         detail = {
@@ -1963,13 +1974,20 @@ async function _seedAgentSkillDependencies(
   installedSkills: Set<string>,
   deletedSkills: Set<string>,
   shouldContinue: () => boolean = () => true,
+  version?: string,
 ): Promise<{ seeded: number; blocked: boolean }> {
   if (!shouldContinue()) return { seeded: 0, blocked: true };
+  // Hub 的 `agents/detail` 要求 content_id + version（B-05）；旧版只认 id，故两者都带。
+  // 调用方通常已有目录行/安装记录的版本，缺省时再从目录行取一次。
+  const detailVersion = typeof version === 'string' && version.trim()
+    ? version.trim()
+    : ((await _findAgentCatalogRowForInstall(agentId))?.version ?? '');
   const detail = await postJson<{
     agent_json: Record<string, unknown>;
     agent_skills_bundle_url?: string;
   }>(
-    '/marketplace/agents/detail', { id: agentId },
+    '/marketplace/agents/detail',
+    detailVersion ? { id: agentId, content_id: agentId, version: detailVersion } : { id: agentId },
   );
   if (!shouldContinue()) return { seeded: 0, blocked: true };
   const privateSkillsZip = await _fetchAgentPrivateSkillsBundle(
@@ -2200,7 +2218,10 @@ export async function ensureDefaultInstalls(
           log.info(`skip default agent ${a.id}; requires CogSeed >= ${minAppVersion}`);
           continue;
         }
-        const depSeed = await _seedAgentSkillDependencies(uid, a.id, installedSkills, deletedSkills, canContinue);
+        const depSeed = await _seedAgentSkillDependencies(
+          uid, a.id, installedSkills, deletedSkills, canContinue,
+          typeof a.version === 'string' ? a.version : undefined,
+        );
         if (!canContinue()) return { seeded_agents: seededAgents, seeded_skills: seededSkills };
         seededSkills += depSeed.seeded;
         if (installedAgents.has(a.id) || depSeed.blocked) continue;

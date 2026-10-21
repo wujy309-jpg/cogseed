@@ -1044,7 +1044,21 @@ function _openAgentCatalogPopup(agentId, catalogRow) {
     if (a) _showAgentsDetailView(a.agent_id);
     return;
   }
-  const src = a || catalogRow;
+  // 已安装对象与目录行合并：标签/示例/能做什么/引用清单只有目录行才有，
+  // 而名称、版本、启用状态以本机安装为准（spec FR-006 详情弹窗）。
+  const row = catalogRow || (!a || typeof catalogRows !== 'function'
+    ? null
+    : (catalogRows('agent') || []).find((r) => r && String(r.id) === String(agentId)) || null);
+  const src = a
+    ? (row ? {
+      ...row,
+      ...a,
+      tags: Array.isArray(a.tags) && a.tags.length ? a.tags : row.tags,
+      examples: a.examples || row.examples,
+      does: Array.isArray(a.does) && a.does.length ? a.does : row.does,
+      skill_refs: a.skill_refs || row.skill_refs,
+    } : a)
+    : catalogRow;
   if (!src) return;
   const lang = getLang();
   const id = String(src.agent_id || src.id || '');
@@ -1057,7 +1071,18 @@ function _openAgentCatalogPopup(agentId, catalogRow) {
   const meta = origin === 'commander'
     ? t('catalog.meta_commander')
     : [metaKey ? t(metaKey, { category: catLabel }) : catLabel, origin === 'platform' ? version : ''].filter(Boolean).join(' · ');
-  const skillIds = a ? _agentSkillIds(a) : (Array.isArray(src.skill_list) ? src.skill_list.map(normalizeDisplayText).filter(Boolean) : []);
+  // 未安装的智能体没有 `agent.json`，技能清单只能取目录行的 `skill_refs`（B-01）；
+  // 老 Hub 没有该字段时才回退 `skill_list`。
+  const catalogSkillIds = Array.isArray(src.skill_refs)
+    ? src.skill_refs
+      .map((x) => (typeof x === 'string' ? x : (x && (x.content_id || x.id)) || ''))
+      .filter(Boolean)
+    : [];
+  const skillIds = a
+    ? _agentSkillIds(a)
+    : (catalogSkillIds.length
+      ? catalogSkillIds
+      : (Array.isArray(src.skill_list) ? src.skill_list.map(normalizeDisplayText).filter(Boolean) : []));
   const depState = a && a.dependency_state && typeof a.dependency_state === 'object' ? a.dependency_state : null;
   const reasons = depState && depState.reasons && typeof depState.reasons === 'object' ? depState.reasons : {};
   const userOffIds = Object.keys(reasons).filter((sid) => reasons[sid] === 'user_disabled');
@@ -1076,6 +1101,7 @@ function _openAgentCatalogPopup(agentId, catalogRow) {
     meta,
     description: a ? _agentSummary(a, lang) : String(pickDesc(src, lang) || '').trim(),
     tags: Array.isArray(src.tags) ? src.tags : [],
+    does: Array.isArray(src.does) ? src.does : [],
     examples: src.examples,
     skills: skillIds.map((sid) => ({ name: _agentSkillNameForId(sid), ready: installed, off: reasons[sid] === 'user_disabled' })),
     enableDep: userOffIds.length ? { id: userOffIds[0], name: userOffNames[0] } : null,

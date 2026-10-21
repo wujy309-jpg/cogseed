@@ -8,9 +8,14 @@ vi.mock('../../../src/main/logger', () => ({
 }));
 
 const UID = 'u-agent-skill-ref-names';
-/** 随包预置技能「AI产品构建评测」：名字是中文，`safeId`（仅 ASCII）过不了。 */
+/**
+ * 合成长中文名技能：`safeId`（仅 ASCII）过不了，正是这条用例要覆盖的形态。
+ *
+ * **不依赖随包内容**（2026-10-21 起随包不再包含中文名技能）：夹具在本机技能目录里现场生成。
+ * id 仍取 12 位十六进制，保持与市场技能同一形态。
+ */
 const CN_SKILL_ID = '36867a076129';
-const CN_SKILL_NAME = 'AI产品构建评测';
+const CN_SKILL_NAME = '中文名测试技能';
 
 let tmpDir: string;
 let prevWs: string | undefined;
@@ -32,8 +37,12 @@ afterEach(() => {
 async function setup() {
   const paths = await import('../../../src/main/paths');
   const dest = path.join(paths.userMarketplaceSkillsDir(UID), CN_SKILL_ID);
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.cpSync(path.join(__dirname, '../../../resources/builtin/marketplace/skills', CN_SKILL_ID), dest, { recursive: true });
+  fs.mkdirSync(dest, { recursive: true });
+  fs.writeFileSync(
+    path.join(dest, 'SKILL.md'),
+    `---\nname: ${CN_SKILL_NAME}\ndescription: 合成夹具\n---\n\n# ${CN_SKILL_NAME}\n`,
+    'utf8',
+  );
   const reg = await import('../../../src/main/model/core-agent/skill-registry');
   await reg.invalidateSkills();
   const agents = await import('../../../src/main/features/agents');
